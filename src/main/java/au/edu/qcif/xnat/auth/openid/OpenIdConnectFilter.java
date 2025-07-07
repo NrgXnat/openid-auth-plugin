@@ -22,6 +22,7 @@ import au.edu.qcif.xnat.auth.openid.tokens.OpenIdAuthToken;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.collections.ListUtils;
+import org.apache.commons.lang3.RegExUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.nrg.framework.generics.GenericUtils;
 import org.nrg.xdat.entities.XdatUserAuth;
@@ -148,7 +149,6 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         } catch (final OAuth2Exception e) {
             log.debug("Could not obtain access token", e);
             log.debug("<<---------------------------->>");
-            e.printStackTrace();
             throw new BadCredentialsException("Could not obtain access token", e);
         } catch (final RuntimeException ex2) {
             log.debug("Runtime exception", ex2);
@@ -223,7 +223,7 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         String userAutoVerified = _plugin.getProperty(providerId, "userAutoVerified");
 
         UserI xdatUser = Users.createUser();
-        xdatUser.setLogin(user.getUsername().replace("|", "_"));
+        xdatUser.setLogin(sanitizeUsername(user.getUsername()));
         xdatUser.setFirstname(user.getFirstname());
         xdatUser.setLastname(user.getLastname());
         xdatUser.setEmail(user.getEmail());
@@ -291,6 +291,26 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         headers.setContentType(MediaType.APPLICATION_JSON);
         headers.set(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken);
         return GenericUtils.convertToTypedMap(_restTemplate.exchange(userInfoEndpoint, HttpMethod.GET, new HttpEntity<>(headers), Map.class).getBody(), String.class, String.class);
+    }
+
+    /**
+     * Replace all characters in the submitted username that are not alphanumeric, dash, underscore, apostrophe, or
+     * period with an underscore. This is useful for sanitizing usernames that may have been submitted by users
+     * that do not comply with the {@link Users#isValidUsername(String) required format}.
+     *
+     * @param candidate The proposed username to sanitize.
+     *
+     * @return The sanitized username.
+     *
+     * @throws IllegalArgumentException If the candidate username can't be sanitized to a valid username, e.g. too long or doesn't start with a letter.
+     */
+    // TODO: This is here to provide compatibility with older versions of XNAT, but eventually should use XNAT's version of this method.
+    private static String sanitizeUsername(final String candidate) {
+        final String transformed = RegExUtils.replaceAll(candidate, "[^a-zA-Z0-9-_'.]", "_");
+        if (!Users.isValidUsername(transformed)) {
+            throw new IllegalArgumentException("The submitted username '" + candidate + "' does not comply with the required format and cannot be sanitized to a valid username.");
+        }
+        return transformed;
     }
 
     private static class NoopAuthenticationManager implements AuthenticationManager {
