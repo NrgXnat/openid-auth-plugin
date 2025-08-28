@@ -17,14 +17,20 @@
  */
 package au.edu.qcif.xnat.auth.openid;
 
+import au.edu.qcif.xnat.auth.openid.service.KeystoreService;
 import au.edu.qcif.xnat.auth.openid.tokens.OpenIdAuthRequestToken;
 import au.edu.qcif.xnat.auth.openid.tokens.OpenIdAuthToken;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.nimbusds.jose.JOSEException;
+import com.nimbusds.jose.crypto.RSADecrypter;
+import com.nimbusds.jwt.EncryptedJWT;
+import com.nimbusds.jwt.JWTClaimsSet;
+import com.nimbusds.jwt.SignedJWT;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.collections.ListUtils;
 import org.apache.commons.lang3.RegExUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.nrg.framework.generics.GenericUtils;
+import org.nrg.xapi.exceptions.NotFoundException;
 import org.nrg.xdat.entities.XdatUserAuth;
 import org.nrg.xdat.exceptions.UsernameAuthMappingNotFoundException;
 import org.nrg.xdat.preferences.SiteConfigPreferences;
@@ -48,8 +54,6 @@ import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.authentication.CredentialsExpiredException;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.AuthenticationException;
-import org.springframework.security.jwt.Jwt;
-import org.springframework.security.jwt.JwtHelper;
 import org.springframework.security.oauth2.client.OAuth2RestTemplate;
 import org.springframework.security.oauth2.common.OAuth2AccessToken;
 import org.springframework.security.oauth2.common.exceptions.OAuth2Exception;
@@ -58,11 +62,14 @@ import org.springframework.security.web.authentication.AbstractAuthenticationPro
 import org.springframework.security.web.authentication.AuthenticationFailureHandler;
 import org.springframework.security.web.authentication.AuthenticationSuccessHandler;
 import org.springframework.security.web.authentication.session.SessionAuthenticationStrategy;
+import org.springframework.stereotype.Component;
 
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import javax.servlet.http.HttpSession;
 import java.io.IOException;
+import java.security.PrivateKey;
+import java.text.ParseException;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
@@ -78,30 +85,35 @@ import java.util.stream.Collectors;
 @SuppressWarnings("deprecation")
 @EnableOAuth2Client
 @Slf4j
+@Component
 public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter {
     private static final List<String> ALL_DOMAINS = Collections.singletonList("*");
+    private static final String PRE_ESTABLISHED_REDIRECT_URI_PROPERTY = "preEstablishedRedirUri";
 
-    private final OpenIdAuthPlugin             _plugin;
+    private final OpenIdAuthPlugin _plugin;
     private final AuthenticationEventPublisher _eventPublisher;
-    private final XdatUserAuthService          _userAuthService;
-    private final SiteConfigPreferences        _siteConfigPreferences;
-    private final Map<String, List<String>>    _allowedDomains;
-    private final ObjectMapper                 _objectMapper;
+    private final XdatUserAuthService _userAuthService;
+    private final SiteConfigPreferences _siteConfigPreferences;
+    private final Map<String, List<String>> _allowedDomains;
+    private final KeystoreService _keystoreService;
 
     private OAuth2RestTemplate _restTemplate;
 
-    public OpenIdConnectFilter(final String defaultFilterProcessesUrl, final OpenIdAuthPlugin plugin, final AuthenticationEventPublisher eventPublisher, final XdatUserAuthService userAuthService, final SiteConfigPreferences siteConfigPreferences) {
-        super(defaultFilterProcessesUrl);
-        log.debug("Creating filter for URL {}", defaultFilterProcessesUrl);
+    public OpenIdConnectFilter(final OpenIdAuthPlugin plugin,
+                               final AuthenticationEventPublisher eventPublisher,
+                               final XdatUserAuthService userAuthService,
+                               final SiteConfigPreferences siteConfigPreferences,
+                               final KeystoreService keystoreService) {
+        super(plugin.getProps().getProperty(PRE_ESTABLISHED_REDIRECT_URI_PROPERTY));
+        log.debug("Creating filter for URL {}", plugin.getProps().getProperty(PRE_ESTABLISHED_REDIRECT_URI_PROPERTY));
         setAuthenticationManager(new NoopAuthenticationManager());
-        _plugin                = plugin;
-        _eventPublisher        = eventPublisher;
-        _userAuthService       = userAuthService;
+        _plugin = plugin;
+        _eventPublisher = eventPublisher;
+        _userAuthService = userAuthService;
         _siteConfigPreferences = siteConfigPreferences;
+        _keystoreService = keystoreService;
 
         _allowedDomains = _plugin.getEnabledProviders().stream().collect(Collectors.toMap(Function.identity(), this::getAllowedEmailDomains));
-        // TODO: This should be initialized from or replaced by the SerializerService instance
-        _objectMapper = new ObjectMapper();
     }
 
     @Autowired
@@ -159,13 +171,28 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         String providerId = (String) request.getSession().getAttribute("providerId");
 
         log.debug("Getting idToken...");
-        final String idToken      = accessToken.getAdditionalInformation().get("id_token").toString();
-        final Jwt    tokenDecoded = JwtHelper.decode(idToken);
+        final String idToken = accessToken.getAdditionalInformation().get("id_token").toString().trim();
 
-        log.debug("===== : {}", tokenDecoded.getClaims());
-        final Map<String, String> authInfo = GenericUtils.convertToTypedMap(_objectMapper.readValue(tokenDecoded.getClaims(), Map.class), String.class, String.class);
+        final JWTClaimsSet claimsSet;
+        try {
+            claimsSet = parseIdToken(idToken, providerId);
+        } catch (JOSEException | ParseException e) {
+            log.error("An unexpected error occurred attempting to parse id_token", e);
+            throw new BadCredentialsException("Failed to parse id_token", e);
+        } catch (NotFoundException e) {
+            log.error("Provider id {} not configured", providerId, e);
+            throw new BadCredentialsException("Provider not configured", e);
+        }
 
+        final Map<String, String> authInfo = claimsSet.getClaims().entrySet().stream()
+                .collect(Collectors.toMap(
+                        Map.Entry::getKey,
+                        e -> e.getValue() != null ? e.getValue().toString() : ""
+                ));
+
+        log.debug("===== : {}", authInfo);
         final String userInfoUri = _plugin.getProperty(providerId, "userInfoUri");
+
         if (!StringUtils.isEmpty(userInfoUri)) {
             Map<String, String> userInfo = getUserInfo(accessToken.getValue(), userInfoUri);
             authInfo.putAll(userInfo);
@@ -180,11 +207,11 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         }
 
         log.debug("Checking if user exists...");
-        UserI  xdatUser;
+        UserI xdatUser;
         String requesterUsername = null;
         try {
             requesterUsername = user.getUsername();
-            xdatUser          = _userAuthService.getUserDetailsByNameAndAuth(requesterUsername, XdatUserAuthService.OPENID, providerId);
+            xdatUser = _userAuthService.getUserDetailsByNameAndAuth(requesterUsername, XdatUserAuthService.OPENID, providerId);
             if (!xdatUser.isEnabled()) {
                 throw new NewAutoAccountNotAutoEnabledException("New OpenID user, needs to to be enabled.", xdatUser);
             }
@@ -218,8 +245,25 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         return null;
     }
 
+    private JWTClaimsSet parseIdToken(final String idToken, final String providerId)
+            throws JOSEException, ParseException, NotFoundException {
+        if (isIdTokenEncrypted(idToken)) {
+            final EncryptedJWT encryptedJWT = EncryptedJWT.parse(idToken);
+            encryptedJWT.decrypt(new RSADecrypter(_keystoreService.getEncryptionPrivateKey(providerId)));
+
+            final String decryptedPayload = encryptedJWT.getPayload().toString();
+            return SignedJWT.parse(decryptedPayload).getJWTClaimsSet();
+        } else {
+            return SignedJWT.parse(idToken).getJWTClaimsSet();
+        }
+    }
+
+    private boolean isIdTokenEncrypted(final String idToken) {
+        return idToken.split("\\.").length == 5;
+    }
+
     private UserI createUserAccount(final String providerId, final OpenIdConnectUserDetails user) throws AuthenticationException {
-        String userAutoEnabled  = _plugin.getProperty(providerId, "userAutoEnabled");
+        String userAutoEnabled = _plugin.getProperty(providerId, "userAutoEnabled");
         String userAutoVerified = _plugin.getProperty(providerId, "userAutoVerified");
 
         UserI xdatUser = Users.createUser();
@@ -234,10 +278,10 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         try {
             UserI adminUser = Users.getAdminUser();
             Users.save(xdatUser, adminUser,
-                       new XdatUserAuth(user.getUsername(), XdatUserAuthService.OPENID, providerId, xdatUser.getLogin(), true, 0),
-                       false, new EventDetails(EventUtils.CATEGORY.DATA, EventUtils.TYPE.WEB_SERVICE,
-                                               "Added User", "Requested by user " + adminUser.getUsername(),
-                                               "Created new user " + user.getUsername() + " through OpenID connect."));
+                    new XdatUserAuth(user.getUsername(), XdatUserAuthService.OPENID, providerId, xdatUser.getLogin(), true, 0),
+                    false, new EventDetails(EventUtils.CATEGORY.DATA, EventUtils.TYPE.WEB_SERVICE,
+                            "Added User", "Requested by user " + adminUser.getUsername(),
+                            "Created new user " + user.getUsername() + " through OpenID connect."));
         } catch (Exception ex2) {
             log.warn("Ignoring exception:", ex2);
         }
@@ -245,15 +289,15 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
     }
 
     private boolean shouldFilterEmailDomains(final String providerId) {
-        return  Boolean.parseBoolean(StringUtils.defaultIfBlank(_plugin.getProperty(providerId, "shouldFilterEmailDomains"), "false"));
+        return Boolean.parseBoolean(StringUtils.defaultIfBlank(_plugin.getProperty(providerId, "shouldFilterEmailDomains"), "false"));
     }
 
     private List<String> getAllowedEmailDomains(final String providerId) {
         return shouldFilterEmailDomains(providerId)
-               ? Arrays.stream(_plugin.getProperty(providerId, "allowedEmailDomains").split("\\s*,\\s*"))
-                       .map(StringUtils::lowerCase)
-                       .collect(Collectors.toList())
-               : ALL_DOMAINS;
+                ? Arrays.stream(_plugin.getProperty(providerId, "allowedEmailDomains").split("\\s*,\\s*"))
+                .map(StringUtils::lowerCase)
+                .collect(Collectors.toList())
+                : ALL_DOMAINS;
     }
 
     private boolean isAllowedEmailDomain(final String email, final String providerId) {
@@ -268,7 +312,7 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
             return true;
         }
         final String[] emailParts = email.split("@");
-        final String   domain     = emailParts.length >= 2 ? emailParts[1] : null;
+        final String domain = emailParts.length >= 2 ? emailParts[1] : null;
         if (StringUtils.isBlank(domain)) {
             log.warn("Couldn't parse a domain from the email address {}, returning false", email);
             return false;
@@ -299,9 +343,7 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
      * that do not comply with the {@link Users#isValidUsername(String) required format}.
      *
      * @param candidate The proposed username to sanitize.
-     *
      * @return The sanitized username.
-     *
      * @throws IllegalArgumentException If the candidate username can't be sanitized to a valid username, e.g. too long or doesn't start with a letter.
      */
     // TODO: This is here to provide compatibility with older versions of XNAT, but eventually should use XNAT's version of this method.

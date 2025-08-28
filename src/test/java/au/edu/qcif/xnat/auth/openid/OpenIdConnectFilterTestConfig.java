@@ -1,6 +1,8 @@
 package au.edu.qcif.xnat.auth.openid;
 
 import au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant;
+import au.edu.qcif.xnat.auth.openid.service.KeystoreService;
+import au.edu.qcif.xnat.auth.openid.service.KeystoreServiceImpl;
 import lombok.extern.slf4j.Slf4j;
 import org.nrg.framework.configuration.ConfigPaths;
 import org.nrg.framework.configuration.SerializerConfig;
@@ -11,28 +13,22 @@ import org.nrg.xdat.security.services.UserManagementServiceI;
 import org.nrg.xdat.services.XdatUserAuthService;
 import org.nrg.xft.security.UserI;
 import org.nrg.xnat.security.provider.AuthenticationProviderConfigurationLocator;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.security.authentication.AuthenticationEventPublisher;
-import org.springframework.security.core.Authentication;
 import org.springframework.security.oauth2.client.DefaultOAuth2ClientContext;
 import org.springframework.security.oauth2.client.OAuth2RestTemplate;
 import org.springframework.security.oauth2.client.token.AccessTokenRequest;
 import org.springframework.security.oauth2.client.token.DefaultAccessTokenRequest;
 import org.springframework.security.web.authentication.AuthenticationFailureHandler;
 import org.springframework.security.web.authentication.AuthenticationSuccessHandler;
-import org.springframework.security.web.authentication.session.SessionAuthenticationException;
 import org.springframework.security.web.authentication.session.SessionAuthenticationStrategy;
 import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
 
-import javax.servlet.ServletException;
-import javax.servlet.http.HttpServletRequest;
-import javax.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.nio.file.Paths;
 import java.util.Collections;
@@ -40,17 +36,19 @@ import java.util.HashMap;
 import java.util.Map;
 
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.*;
+import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 @SuppressWarnings("deprecation")
 @Configuration
 @Import(SerializerConfig.class)
 @Slf4j
 public class OpenIdConnectFilterTestConfig {
-    public static final String TEST_PROVIDER_ID  = "test";
-    public static final String TEST_USERNAME     = "test_1234567890";
-    public static final String STATE             = "state";
-    public static final String CSRF_STATE        = "CSRF-state";
+    public static final String TEST_PROVIDER_ID = "test";
+    public static final String TEST_USERNAME = "test_1234567890";
+    public static final String STATE = "state";
+    public static final String CSRF_STATE = "CSRF-state";
     public static final String TEST_ACCESS_TOKEN = "test-token";
 
     @Bean
@@ -108,15 +106,20 @@ public class OpenIdConnectFilterTestConfig {
     }
 
     @Bean
+    public KeystoreService keystoreService() {
+        return mock(KeystoreServiceImpl.class);
+    }
+
+    @Bean
     public AuthenticationEventPublisher authenticationEventPublisher() {
         return mock(AuthenticationEventPublisher.class);
     }
 
     @Bean
     public OpenIdAuthPlugin openIdAuthPlugin(final SiteConfigPreferences siteConfigPreferences) throws IOException {
-        final ConfigPaths                                configPaths = new ConfigPaths(Collections.singletonList(Paths.get(new ClassPathResource("config").getURI())));
-        final AuthenticationProviderConfigurationLocator locator     = new AuthenticationProviderConfigurationLocator(configPaths, null);
-        return new OpenIdAuthPlugin(authenticationEventPublisher(), userAuthService(), locator, siteConfigPreferences);
+        final ConfigPaths configPaths = new ConfigPaths(Collections.singletonList(Paths.get(new ClassPathResource("config").getURI())));
+        final AuthenticationProviderConfigurationLocator locator = new AuthenticationProviderConfigurationLocator(configPaths, null);
+        return new OpenIdAuthPlugin(locator, siteConfigPreferences);
     }
 
     @Bean
@@ -138,7 +141,10 @@ public class OpenIdConnectFilterTestConfig {
     }
 
     @Bean
-    public OpenIdConnectFilter openIdConnectFilter(final SiteConfigPreferences siteConfigPreferences) throws IOException {
-        return new OpenIdConnectFilter("/openid-login", openIdAuthPlugin(siteConfigPreferences), authenticationEventPublisher(), userAuthService(), siteConfigPreferences);
+    public OpenIdConnectFilter openIdConnectFilter(final SiteConfigPreferences siteConfigPreferences,
+                                                   final KeystoreService keystoreService,
+                                                   final OpenIdAuthPlugin openIdAuthPlugin,
+                                                   final AuthenticationEventPublisher authenticationEventPublisher) {
+        return new OpenIdConnectFilter(openIdAuthPlugin, authenticationEventPublisher, userAuthService(), siteConfigPreferences, keystoreService);
     }
 }
