@@ -11,10 +11,10 @@ import org.nrg.xapi.rest.XapiRequestMapping;
 import org.nrg.xdat.security.services.RoleHolder;
 import org.nrg.xdat.security.services.UserManagementServiceI;
 import org.springframework.http.MediaType;
-import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
@@ -30,6 +30,7 @@ public class OpenIdApi extends AbstractXapiRestController {
 
     private static final String PRIVACY_POLICY_FILE_PROPERTY_NAME = "privacyPolicy";
     private static final String TOS_FILE_PROPERTY_NAME = "tos";
+    private static final String HTML_CHARSET_UTF_8_MEDIA_TYPE = MediaType.TEXT_HTML_VALUE + ";charset=UTF-8";
 
     private final KeystoreService keystoreService;
     private final Path xnatHome;
@@ -51,20 +52,20 @@ public class OpenIdApi extends AbstractXapiRestController {
         return keystoreService.getJwks().toJSONObject();
     }
 
-    @XapiRequestMapping(value = "legal/privacy-policy", produces = MediaType.TEXT_HTML_VALUE)
+    @XapiRequestMapping(value = "legal/privacy-policy", produces = HTML_CHARSET_UTF_8_MEDIA_TYPE)
     public String privacyPolicy() throws IOException, NotFoundException {
         final Optional<Path> document = getDocumentPathFromFilenameProperty(PRIVACY_POLICY_FILE_PROPERTY_NAME);
         if (document.isPresent()) {
-            return new String(Files.readAllBytes(document.get()));
+            return new String(Files.readAllBytes(document.get()), StandardCharsets.UTF_8);
         }
         throw new NotFoundException("Unable to find privacy policy");
     }
 
-    @XapiRequestMapping(value = "legal/terms-of-service", produces = MediaType.TEXT_HTML_VALUE)
+    @XapiRequestMapping(value = "legal/terms-of-service", produces = HTML_CHARSET_UTF_8_MEDIA_TYPE)
     public String termsOfService() throws IOException, NotFoundException {
         final Optional<Path> tosDocumentPath = getDocumentPathFromFilenameProperty(TOS_FILE_PROPERTY_NAME);
         if (tosDocumentPath.isPresent()) {
-            return new String(Files.readAllBytes(tosDocumentPath.get()));
+            return new String(Files.readAllBytes(tosDocumentPath.get()), StandardCharsets.UTF_8);
         }
         throw new NotFoundException("Unable to find terms of service");
     }
