@@ -29,6 +29,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.collections.ListUtils;
 import org.apache.commons.lang3.RegExUtils;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.velocity.VelocityContext;
 import org.nrg.framework.generics.GenericUtils;
 import org.nrg.xapi.exceptions.NotFoundException;
 import org.nrg.xdat.entities.XdatUserAuth;
@@ -38,6 +39,7 @@ import org.nrg.xdat.security.helpers.UserHelper;
 import org.nrg.xdat.security.helpers.Users;
 import org.nrg.xdat.services.XdatUserAuthService;
 import org.nrg.xdat.turbine.utils.AccessLogger;
+import org.nrg.xdat.turbine.utils.AdminUtils;
 import org.nrg.xdat.turbine.utils.TurbineUtils;
 import org.nrg.xft.event.EventDetails;
 import org.nrg.xft.event.EventUtils;
@@ -212,22 +214,22 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         try {
             requesterUsername = user.getUsername();
             xdatUser = _userAuthService.getUserDetailsByNameAndAuth(requesterUsername, XdatUserAuthService.OPENID, providerId);
-            if (!xdatUser.isEnabled()) {
-                throw new NewAutoAccountNotAutoEnabledException("New OpenID user, needs to to be enabled.", xdatUser);
-            }
-            if ((getSiteConfigPreferences().getEmailVerification() && !xdatUser.isVerified()) || !xdatUser.isAccountNonLocked()) {
-                throw new CredentialsExpiredException("Attempted login to unverified or locked account: " + xdatUser.getUsername());
-            }
         } catch (UsernameAuthMappingNotFoundException e) {
             if (Boolean.parseBoolean(_plugin.getProperty(providerId, "forceUserCreate"))) {
                 xdatUser = createUserAccount(providerId, user);
             } else {
-                // Give users an option to connect OpenID Account with an XNAT account
+                // Give users an option to register or connect OpenID Account with an XNAT account
                 log.info("User {} attempted to log using authentication provider ID {}, diverting to account merge page.", user.getUsername(), providerId);
                 request.getSession().setAttribute(UsernameAuthMappingNotFoundException.class.getSimpleName(), new UsernameAuthMappingNotFoundException(e.getUsername(), e.getAuthMethod(), e.getAuthMethodId(), user.getEmail(), user.getLastname(), user.getFirstname()));
                 response.sendRedirect(TurbineUtils.GetFullServerPath() + "/app/template/RegisterExternalLogin.vm");
                 return null;
             }
+        }
+        if (!xdatUser.isEnabled()) {
+            throw new NewAutoAccountNotAutoEnabledException("New OpenID user, needs to to be enabled.", xdatUser);
+        }
+        if ((getSiteConfigPreferences().getEmailVerification() && !xdatUser.isVerified()) || !xdatUser.isAccountNonLocked()) {
+            throw new CredentialsExpiredException("Attempted login to unverified or locked account: " + xdatUser.getUsername());
         }
 
         if (requesterUsername != null) {
@@ -285,6 +287,15 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         } catch (Exception ex2) {
             log.warn("Ignoring exception:", ex2);
         }
+
+        // Send email notification
+        try {
+            AdminUtils.sendNewUserNotification(xdatUser, "", "", "",
+                    new VelocityContext());
+        } catch (Exception e) {
+            log.error("Error sending new user notification email for user {}", xdatUser.getUsername(), e);
+        }
+
         return xdatUser;
     }
 
