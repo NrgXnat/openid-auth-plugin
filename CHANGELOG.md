@@ -3,6 +3,9 @@
 Adds OpenID Connect (OIDC) authentication support to XNAT.
 
 ## <a name="1.4.0"></a>OpenID Authentication Plugin Version 1.4.0 Release Notes
+**BREAKING CHANGE:** 1.4.0 removes duplicative properties `userAutoEnabled` and `userAutoVerified`. Before installing 1.4.0, make sure you have set `auto.enabled` and `auto.verified` appropriately. 
+If you have `forceUserCreate=true`, you might need to change them to match the values in `userAutoEnabled` and `userAutoVerified`. If you have `forceUserCreate=false`, you probably already needed to set
+`auto.enabled` and `auto.verified` per your desired configuration.
 
 ### <a name="1.4.0"></a>Version: 1.4.0
 
