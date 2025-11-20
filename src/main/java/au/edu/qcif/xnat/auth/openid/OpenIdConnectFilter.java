@@ -265,16 +265,17 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
     }
 
     private UserI createUserAccount(final String providerId, final OpenIdConnectUserDetails user) throws AuthenticationException {
-        String userAutoEnabled = _plugin.getProperty(providerId, "userAutoEnabled");
-        String userAutoVerified = _plugin.getProperty(providerId, "userAutoVerified");
+        // Use standard XNAT provider attributes (auto.enabled/auto.verified) for consistency with other authentication providers
+        boolean autoEnabled = _plugin.isAutoEnabled(providerId);
+        boolean autoVerified = _plugin.isAutoVerified(providerId);
 
         UserI xdatUser = Users.createUser();
         xdatUser.setLogin(sanitizeUsername(user.getUsername()));
         xdatUser.setFirstname(user.getFirstname());
         xdatUser.setLastname(user.getLastname());
         xdatUser.setEmail(user.getEmail());
-        xdatUser.setEnabled(userAutoEnabled);
-        xdatUser.setVerified(userAutoVerified);
+        xdatUser.setEnabled(autoEnabled);
+        xdatUser.setVerified(autoVerified);
 
         log.info("Create user, username: {}", xdatUser.getUsername());
         try {

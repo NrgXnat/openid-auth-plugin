@@ -105,6 +105,30 @@ public class OpenIdAuthPlugin {
         return _props;
     }
 
+    /**
+     * Gets the auto-enabled setting for the specified provider from the standard XNAT provider attributes.
+     * This determines whether new users created through this provider should be automatically enabled.
+     *
+     * @param providerId The provider ID
+     * @return true if users should be auto-enabled, false otherwise
+     */
+    public boolean isAutoEnabled(String providerId) {
+        final ProviderAttributes providerDefinition = _locator.getProviderDefinition(providerId);
+        return providerDefinition != null && providerDefinition.isAutoEnabled();
+    }
+
+    /**
+     * Gets the auto-verified setting for the specified provider from the standard XNAT provider attributes.
+     * This determines whether new users created through this provider should be automatically verified.
+     *
+     * @param providerId The provider ID
+     * @return true if users should be auto-verified, false otherwise
+     */
+    public boolean isAutoVerified(String providerId) {
+        final ProviderAttributes providerDefinition = _locator.getProviderDefinition(providerId);
+        return providerDefinition != null && providerDefinition.isAutoVerified();
+    }
+
     public Set<String> getAllConfiguredIdTokenEncryptionAlgorithms() {
         return _props.entrySet().stream()
                 .filter(e -> {

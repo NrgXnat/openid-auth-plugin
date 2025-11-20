@@ -106,13 +106,13 @@ Comma delimted whitelist of domains.
 
 Allows skipping of user creation, usually set to true.
 
-### openid.`providerId`.userAutoEnabled
+### auto.enabled
 
-Flag to set the `enabled` property of new users, set to false to allow admins to manually enable users before allowing logins, set to true to allow immediate access.
+Standard XNAT provider attribute that sets the `enabled` property of new users. Set to `false` to require admins to manually enable users before allowing logins, set to `true` to allow immediate access.
 
-### openid.`providerId`.userAutoVerified
+### auto.verified
 
-Flag to set the `verified` property of new users.
+Standard XNAT provider attribute that sets the `verified` property of new users. Set to `true` to automatically verify new users, `false` to require email verification or manual verification by an administrator.
 
 ### openid.`providerId`.userInfoUri
 
