@@ -1,10 +1,8 @@
 # XNAT OpenID Connect Authentication Provider Plugin
 
-Tested with [Google's OpenID Connect](https://developers.google.com/identity/protocols/OpenIDConnect 'Google OpenID Connect') and [AAF](https://aaf.edu.au/ 'AAF')
-
 ## Pre-requisities
 
-This plugin is for use with XNAT 1.7.5.x releases.
+This plugin is for use with XNAT 1.7.5.x+ releases.
 
 There are 2 ways to deploy XNAT-Web:
 
@@ -129,6 +127,93 @@ Flag to enable the PKCE feature in the authrozation code grant flow
 ### openid.`providerId`.usernamePattern
 
 Default pattern to define auth_user field of the xhbm_xdat_user_auth table
+
+### openid.`providerId`.idTokenEncryptionAlgorithm
+
+Optional algorithm for ID token encryption. When configured, XNAT will generate and publish public encryption keys that OpenID providers can use to encrypt ID tokens before sending them to XNAT.
+
+Supported algorithms: `RSA1_5`, `RSA-OAEP`, `RSA-OAEP-256`, `RSA-OAEP-384`, `RSA-OAEP-512`
+
+Example: `openid.keycloak.idTokenEncryptionAlgorithm=RSA-OAEP-256`
+
+## ID Token Encryption and Key Management
+
+When ID token encryption is configured, XNAT automatically manages encryption keys as follows:
+
+### Key Storage and Persistence
+
+- **Database-backed storage**: Encryption keys are stored in the XNAT database (in the preferences system)
+- **Automatic sharing**: Keys are automatically shared across all nodes in load-balanced environments
+- **Persistent across restarts**: Keys are generated once and reused on subsequent Tomcat restarts
+- **No manual configuration required**: Keys are automatically generated on first startup if they don't exist
+
+### Public Key Endpoint
+
+OpenID providers can retrieve public keys from the JWKS (JSON Web Key Set) endpoint:
+
+```
+https://your-xnat-domain/xapi/openid/.well-known/jwks.json
+```
+
+This endpoint is publicly accessible and returns only public keys (private keys remain secure in the database).
+
+### Key Rotation
+
+To rotate encryption keys:
+
+1. Delete the stored key from the XNAT database directly via SQL:
+   ```sql
+   DELETE FROM xhbm_preference p
+   USING xhbm_tool t
+   WHERE t.id = p.tool
+     AND t.tool_id = 'openid'
+     AND p.name = 'jwk-RSA-OAEP-256';
+   ```
+2. Restart **all** Tomcat instances (the primary node will generate a new key on startup)
+3. Update your OpenID provider to fetch the new public key from the JWKS endpoint
+
+**Note:** All nodes must be restarted to pick up the new key. Simply deleting from the database won't update in-memory keys on running nodes.
+
+### Key Status API
+
+Check if a key exists in the database (admin-only):
+```bash
+curl -u admin:password https://your-xnat/xapi/openid/keys/RSA-OAEP-256
+```
+
+Returns `true` if the key exists, `false` otherwise.
+
+### Backup and Recovery
+
+- **Backup**: Encryption keys are included in standard XNAT database backups
+- **Recovery**: Restore the database to recover keys
+- **Important**: If keys are lost, OpenID providers must re-fetch the new public key after key regeneration
+
+### Load-Balanced Environments
+
+No special configuration is required for load-balanced environments:
+
+- All nodes automatically share the same keys via the database
+- No file synchronization needed
+- No per-node key generation issues
+
+#### Startup Behavior in Multi-Node Environments
+
+When encryption is enabled:
+
+- **Primary node**: Generates encryption keys on first startup and persists them to the database
+- **Non-primary nodes**: Wait for the primary node to generate keys, checking the database with exponential backoff
+- **Timeout**: Non-primary nodes will retry for up to ~5 minutes before failing if keys are not available
+
+**Important considerations:**
+
+1. **Startup order**: If all nodes start simultaneously, non-primary nodes will wait for the primary node to complete key generation
+2. **Primary node delays**: If the primary node is slow to start or fails during startup, non-primary nodes may timeout waiting for keys
+3. **Recommendations**:
+   - For initial deployment with encryption enabled, start the primary node first
+   - Ensure the primary node is healthy before starting additional nodes
+   - Monitor logs on non-primary nodes for key loading status
+   - In case of timeout errors, verify the primary node has started successfully and keys are in the database
 
 ## Sample Configuration
 
