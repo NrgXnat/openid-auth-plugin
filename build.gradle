@@ -21,11 +21,11 @@ plugins {
     id "io.franzbecker.gradle-lombok" version "5.0.0"
     id "io.spring.dependency-management" version "1.0.14.RELEASE"
     id "net.linguica.maven-settings" version "0.5"
-    id "org.nrg.xnat.build.xnat-data-builder" version "1.8.7"
+    id "org.nrg.xnat.build.xnat-data-builder" version "1.9.2"
 }
 
 group "au.edu.qcif.xnat.openid"
-version "1.4.0-RC-SNAPSHOT"
+version "1.4.0"
 description "XNAT OpenID Authentication Provider"
 
 repositories {
