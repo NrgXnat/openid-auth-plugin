@@ -52,6 +52,7 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.security.authentication.AuthenticationEventPublisher;
 import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.authentication.AuthenticationServiceException;
 import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.authentication.CredentialsExpiredException;
 import org.springframework.security.core.Authentication;
@@ -70,7 +71,6 @@ import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import javax.servlet.http.HttpSession;
 import java.io.IOException;
-import java.security.PrivateKey;
 import java.text.ParseException;
 import java.util.Arrays;
 import java.util.Collections;
@@ -280,13 +280,15 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         log.info("Create user, username: {}", xdatUser.getUsername());
         try {
             UserI adminUser = Users.getAdminUser();
-            Users.save(xdatUser, adminUser,
-                    new XdatUserAuth(user.getUsername(), XdatUserAuthService.OPENID, providerId, xdatUser.getLogin(), true, 0),
+            XdatUserAuth auth = new XdatUserAuth(user.getUsername(), XdatUserAuthService.OPENID, providerId, xdatUser.getLogin(), true, 0);
+            Users.save(xdatUser, adminUser, auth,
                     false, new EventDetails(EventUtils.CATEGORY.DATA, EventUtils.TYPE.WEB_SERVICE,
                             "Added User", "Requested by user " + adminUser.getUsername(),
                             "Created new user " + user.getUsername() + " through OpenID connect."));
-        } catch (Exception ex2) {
-            log.warn("Ignoring exception:", ex2);
+            xdatUser.setAuthorization(auth);
+        } catch (Exception e) {
+            log.error("Failed to create user account for OpenID user {}", user.getUsername(), e);
+            throw new AuthenticationServiceException("Failed to create user account", e);
         }
 
         // Send email notification
