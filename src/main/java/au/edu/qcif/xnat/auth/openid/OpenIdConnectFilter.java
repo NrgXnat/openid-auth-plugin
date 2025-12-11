@@ -92,6 +92,11 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
     private static final List<String> ALL_DOMAINS = Collections.singletonList("*");
     private static final String PRE_ESTABLISHED_REDIRECT_URI_PROPERTY = "preEstablishedRedirUri";
 
+    /**
+     * Session attribute key for storing OpenID error messages to display on the login page.
+     */
+    public static final String OPENID_ERROR_MESSAGE = "openIdErrorMessage";
+
     private final OpenIdAuthPlugin _plugin;
     private final AuthenticationEventPublisher _eventPublisher;
     private final XdatUserAuthService _userAuthService;
@@ -199,7 +204,14 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
             Map<String, String> userInfo = getUserInfo(accessToken.getValue(), userInfoUri);
             authInfo.putAll(userInfo);
         }
-        final OpenIdConnectUserDetails user = new OpenIdConnectUserDetails(providerId, authInfo, accessToken, _plugin);
+
+        final OpenIdConnectUserDetails user;
+        try {
+            user = new OpenIdConnectUserDetails(providerId, authInfo, accessToken, _plugin);
+        } catch (IllegalArgumentException e) {
+            log.error("OpenID authentication failed for provider '{}'", providerId, e);
+            throw new BadCredentialsException(e.getMessage(), e);
+        }
 
         if (shouldFilterEmailDomains(providerId) && !isAllowedEmailDomain(user.getEmail(), providerId)) {
             throw new NewAutoAccountNotAutoEnabledException("New OpenID user, email is not on the domain whitelist.", user);
@@ -245,6 +257,29 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
             return authentication;
         }
         return null;
+    }
+
+    @Override
+    protected void unsuccessfulAuthentication(HttpServletRequest request, HttpServletResponse response,
+                                              AuthenticationException failed) throws IOException {
+        // Build a user-friendly error message indicating this is an OIDC error
+        String userMessage;
+        if (failed instanceof BadCredentialsException) {
+            String detail = failed.getMessage();
+            if (detail != null && detail.contains("usernamePattern")) {
+                userMessage = "OpenID Connect login failed due to a configuration error. Please contact your administrator.";
+            } else {
+                userMessage = "OpenID Connect login failed. Please try again or contact your administrator if the problem persists.";
+            }
+        } else {
+            userMessage = "OpenID Connect login failed. Please try again or contact your administrator if the problem persists.";
+        }
+
+        // Store the error message in session for the Login screen extension to pick up
+        request.getSession().setAttribute(OPENID_ERROR_MESSAGE, userMessage);
+
+        // Redirect to the login page
+        response.sendRedirect(TurbineUtils.GetFullServerPath() + "/app/template/Login.vm");
     }
 
     private JWTClaimsSet parseIdToken(final String idToken, final String providerId)

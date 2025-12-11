@@ -1,0 +1,145 @@
+<!--
+  xnat-openid-auth-plugin: sample-terms-of-service.html
+
+  Copy to $XNAT_HOME/config/auth/legal/terms-of-service.html
+
+  Update [Organization Name], [Date], [Jurisdiction], [Address], and [Email]
+  placeholders before deploying to your XNAT instance.
+
+  Referenced by openid.tos in your openid-provider.properties
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Terms of Service</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html { background: #f0f4f7; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 40px 20px;
+      line-height: 1.65;
+      color: #333;
+      font-size: 15px;
+    }
+    .container {
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.08), 0 8px 30px rgba(0,0,0,0.04);
+      padding: 48px 56px;
+    }
+    header {
+      border-bottom: 1px solid #e8eaed;
+      padding-bottom: 24px;
+      margin-bottom: 32px;
+    }
+    h1 {
+      font-size: 28px;
+      font-weight: 600;
+      color: #1a1a1a;
+      margin-bottom: 8px;
+    }
+    .meta { color: #666; font-size: 14px; }
+    h2 {
+      font-size: 17px;
+      font-weight: 600;
+      color: #1a1a1a;
+      margin: 32px 0 12px;
+      padding-top: 8px;
+    }
+    h2:first-of-type { margin-top: 0; }
+    p { margin: 0 0 14px; }
+    ul {
+      margin: 0 0 14px;
+      padding: 12px 16px 12px 36px;
+      background: #f8f9fa;
+      border-radius: 8px;
+    }
+    li { margin: 6px 0; color: #444; }
+    .disclaimer {
+      background: #fef3cd;
+      border-left: 4px solid #d4a800;
+      border-radius: 0 8px 8px 0;
+      padding: 14px 18px;
+      margin: 14px 0;
+      font-size: 14px;
+      color: #5a4a00;
+    }
+    footer {
+      margin-top: 40px;
+      padding-top: 24px;
+      border-top: 1px solid #e8eaed;
+      color: #666;
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+
+<div class="container">
+<header>
+  <h1>Terms of Service</h1>
+  <p class="meta">Last Updated: [Date]</p>
+</header>
+
+<h2>Acceptance of Terms</h2>
+<p>By accessing or using this XNAT platform ("Service"), you agree to these Terms of Service. If you do not agree, do not use the Service.</p>
+
+<h2>Description of Service</h2>
+<p>XNAT is a platform for managing, processing, and sharing research imaging data. The Service is provided for authorized research purposes only.</p>
+
+<h2>User Accounts</h2>
+<p>You must provide accurate information when creating an account. You are responsible for maintaining the security of your account credentials. Access is limited to authorized users.</p>
+
+<h2>Acceptable Use</h2>
+<p>You agree to:</p>
+<ul>
+  <li>Use the Service only for authorized research purposes</li>
+  <li>Comply with all applicable laws and regulations</li>
+  <li>Maintain the confidentiality of research data as required</li>
+  <li>Report any security vulnerabilities or unauthorized access</li>
+  <li>Follow your institution's data governance policies</li>
+</ul>
+
+<p>You agree NOT to:</p>
+<ul>
+  <li>Share your account credentials</li>
+  <li>Attempt to access data you are not authorized to view</li>
+  <li>Upload malicious code or interfere with the Service</li>
+  <li>Use the Service for commercial purposes without authorization</li>
+  <li>Circumvent access controls or security measures</li>
+</ul>
+
+<h2>Research Data</h2>
+<p>You are solely responsible for ensuring you have rights to upload and use your data, obtaining necessary consents and approvals (e.g., IRB), and compliance with HIPAA, GDPR, and other applicable regulations.</p>
+<p>We provide the platform infrastructure. We do not review, validate, or take responsibility for the content of your research data.</p>
+
+<h2>Intellectual Property</h2>
+<p>You retain ownership of your research data. You grant us a limited license to store and process your data solely to provide the Service.</p>
+
+<h2>Disclaimer of Warranties</h2>
+<p class="disclaimer">The service is provided "as is" without warranties of any kind, express or implied, including merchantability, fitness for a particular purpose, or non-infringement.</p>
+
+<h2>Limitation of Liability</h2>
+<p class="disclaimer">To the maximum extent permitted by law, we shall not be liable for any indirect, incidental, special, consequential, or punitive damages arising from your use of the service.</p>
+
+<h2>Termination</h2>
+<p>We may suspend or terminate your access for violation of these Terms or for any reason with reasonable notice. Upon termination, your access to the Service and stored data may be revoked.</p>
+
+<h2>Changes to Terms</h2>
+<p>We may modify these Terms at any time. Continued use after changes constitutes acceptance of the modified Terms.</p>
+
+<h2>Governing Law</h2>
+<p>These Terms are governed by the laws of [Jurisdiction].</p>
+
+<footer>
+  <strong>Contact</strong><br>
+  [Organization Name] · [Address] · [Email]
+</footer>
+</div>
+
+</body>
+</html>
