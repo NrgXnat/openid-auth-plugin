@@ -1,11 +1,22 @@
-# XNAT OpenID Authentication Plugin
+# XNAT OpenID Authentication Plugin Changelog
 
 Adds OpenID Connect (OIDC) authentication support to XNAT.
 
-## <a name="1.4.0"></a>OpenID Authentication Plugin Version 1.4.0 Release Notes
+## <a name="1.4.0"></a>OpenID Authentication Plugin Version 1.4.x Release Notes
 **BREAKING CHANGE:** 1.4.0 removes duplicative properties `userAutoEnabled` and `userAutoVerified`. Before installing 1.4.0, make sure you have set `auto.enabled` and `auto.verified` appropriately. 
 If you have `forceUserCreate=true`, you might need to change them to match the values in `userAutoEnabled` and `userAutoVerified`. If you have `forceUserCreate=false`, you probably already needed to set
 `auto.enabled` and `auto.verified` per your desired configuration.
+
+### <a name="1.4.1"></a>Version: 1.4.1
+
+#### 1.4.1 - Fixes
+* [PLUGINS-265](https://radiologics.atlassian.net/browse/PLUGINS-265)
+  * Fixed issue where newly created users were locked out on first login if `auto.enabled: true`
+  * Exceptions during user creation are no longer swallowed
+* [PLUGINS-263](https://radiologics.atlassian.net/browse/PLUGINS-263)
+  * Improved logging and error handling for invalid `usernamePattern` configuration
+  * OIDC authentication errors now take users to the login page with an OIDC-specific error message instead of a stuck "Refreshing data type cache" modal
+
 
 ### <a name="1.4.0"></a>Version: 1.4.0
 
@@ -23,7 +34,7 @@ If you have `forceUserCreate=true`, you might need to change them to match the v
 * [PLUGINS-216](https://radiologics.atlassian.net/browse/PLUGINS-216) Added username sanitization when auto-creating user accounts for new XNAT users
 * [PLUGINS-251](https://radiologics.atlassian.net/browse/PLUGINS-251) Removed duplicative properties `userAutoEnabled` and `userAutoVerified` in favor of `auto.enabled` and `auto.verified`, which are expected from all authentication providers in XNAT
 
-#### 1.4.0 - Bug Fixes
+#### 1.4.0 - Fixes
 * [PLUGINS-250](https://radiologics.atlassian.net/browse/PLUGINS-250) Fixed UX issue where setting `forceUserCreate=true` but `userAutoEnabled=false` sent the user to `InactiveAccount.vm` and did not send new user notification email 
 * [PLUGINS-188](https://radiologics.atlassian.net/browse/PLUGINS-188) Fixed unit test error caused by mismatched provider ID
 
