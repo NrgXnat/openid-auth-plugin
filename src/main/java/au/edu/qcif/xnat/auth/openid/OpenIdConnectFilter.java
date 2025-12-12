@@ -52,6 +52,7 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.security.authentication.AuthenticationEventPublisher;
 import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.authentication.AuthenticationServiceException;
 import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.authentication.CredentialsExpiredException;
 import org.springframework.security.core.Authentication;
@@ -66,11 +67,13 @@ import org.springframework.security.web.authentication.AuthenticationSuccessHand
 import org.springframework.security.web.authentication.session.SessionAuthenticationStrategy;
 import org.springframework.stereotype.Component;
 
+import javax.servlet.ServletException;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import javax.servlet.http.HttpSession;
 import java.io.IOException;
-import java.security.PrivateKey;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.text.ParseException;
 import java.util.Arrays;
 import java.util.Collections;
@@ -91,6 +94,11 @@ import java.util.stream.Collectors;
 public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter {
     private static final List<String> ALL_DOMAINS = Collections.singletonList("*");
     private static final String PRE_ESTABLISHED_REDIRECT_URI_PROPERTY = "preEstablishedRedirUri";
+
+    /**
+     * Session attribute key for storing OpenID error messages to display on the login page.
+     */
+    public static final String OPENID_ERROR_MESSAGE = "openIdErrorMessage";
 
     private final OpenIdAuthPlugin _plugin;
     private final AuthenticationEventPublisher _eventPublisher;
@@ -199,7 +207,14 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
             Map<String, String> userInfo = getUserInfo(accessToken.getValue(), userInfoUri);
             authInfo.putAll(userInfo);
         }
-        final OpenIdConnectUserDetails user = new OpenIdConnectUserDetails(providerId, authInfo, accessToken, _plugin);
+
+        final OpenIdConnectUserDetails user;
+        try {
+            user = new OpenIdConnectUserDetails(providerId, authInfo, accessToken, _plugin);
+        } catch (IllegalArgumentException e) {
+            log.error("OpenID authentication failed for provider '{}'", providerId, e);
+            throw new BadCredentialsException(e.getMessage(), e);
+        }
 
         if (shouldFilterEmailDomains(providerId) && !isAllowedEmailDomain(user.getEmail(), providerId)) {
             throw new NewAutoAccountNotAutoEnabledException("New OpenID user, email is not on the domain whitelist.", user);
@@ -228,8 +243,16 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         if (!xdatUser.isEnabled()) {
             throw new NewAutoAccountNotAutoEnabledException("New OpenID user, needs to to be enabled.", xdatUser);
         }
-        if ((getSiteConfigPreferences().getEmailVerification() && !xdatUser.isVerified()) || !xdatUser.isAccountNonLocked()) {
-            throw new CredentialsExpiredException("Attempted login to unverified or locked account: " + xdatUser.getUsername());
+        if (getSiteConfigPreferences().getEmailVerification() && !xdatUser.isVerified()) {
+            log.info("User {} is not verified, redirecting to verification page.", xdatUser.getUsername());
+            String encodedEmail = URLEncoder.encode(xdatUser.getEmail(), StandardCharsets.UTF_8.toString());
+            String encodedUsername = URLEncoder.encode(xdatUser.getUsername(), StandardCharsets.UTF_8.toString());
+            response.sendRedirect(TurbineUtils.GetFullServerPath() + "/app/template/VerificationSent.vm" +
+                    "?emailTo=" + encodedEmail + "&emailUsername=" + encodedUsername);
+            return null;
+        }
+        if (!xdatUser.isAccountNonLocked()) {
+            throw new CredentialsExpiredException("Attempted login to locked account: " + xdatUser.getUsername());
         }
 
         if (requesterUsername != null) {
@@ -245,6 +268,45 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
             return authentication;
         }
         return null;
+    }
+
+    /**
+     * Handles unsuccessful authentication attempts.
+     *
+     * Exception types thrown by attemptAuthentication:
+     * - NewAutoAccountNotAutoEnabledException: user not enabled, email domain not whitelisted, or provider disabled
+     * - CredentialsExpiredException: account locked (unverified users are redirected directly in attemptAuthentication)
+     * - BadCredentialsException: failed to get access token, parse ID token, or invalid username pattern
+     * - AuthenticationServiceException: failed to create user account
+     */
+    @Override
+    protected void unsuccessfulAuthentication(HttpServletRequest request, HttpServletResponse response,
+                                              AuthenticationException failed) throws IOException, ServletException {
+        // For NewAutoAccountNotAutoEnabledException and CredentialsExpiredException, delegate to the
+        // default XNAT failure handler (see XnatUrlAuthenticationFailureHandler)
+        if (failed instanceof NewAutoAccountNotAutoEnabledException || failed instanceof CredentialsExpiredException) {
+            super.unsuccessfulAuthentication(request, response, failed);
+            return;
+        }
+
+        // For other errors (BadCredentialsException, etc.), show a user-friendly OIDC-specific message
+        String userMessage;
+        if (failed instanceof BadCredentialsException) {
+            String detail = failed.getMessage();
+            if (detail != null && detail.contains("usernamePattern")) {
+                userMessage = "OpenID Connect login failed due to a configuration error. Please contact your administrator.";
+            } else {
+                userMessage = "OpenID Connect login failed. Please try again or contact your administrator if the problem persists.";
+            }
+        } else {
+            userMessage = "OpenID Connect login failed. Please try again or contact your administrator if the problem persists.";
+        }
+
+        // Store the error message in session for the Login screen extension to pick up
+        request.getSession().setAttribute(OPENID_ERROR_MESSAGE, userMessage);
+
+        // Redirect to the login page
+        response.sendRedirect(TurbineUtils.GetFullServerPath() + "/app/template/Login.vm");
     }
 
     private JWTClaimsSet parseIdToken(final String idToken, final String providerId)
@@ -280,21 +342,26 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         log.info("Create user, username: {}", xdatUser.getUsername());
         try {
             UserI adminUser = Users.getAdminUser();
-            Users.save(xdatUser, adminUser,
-                    new XdatUserAuth(user.getUsername(), XdatUserAuthService.OPENID, providerId, xdatUser.getLogin(), true, 0),
+            XdatUserAuth auth = new XdatUserAuth(user.getUsername(), XdatUserAuthService.OPENID, providerId, xdatUser.getLogin(), true, 0);
+            Users.save(xdatUser, adminUser, auth,
                     false, new EventDetails(EventUtils.CATEGORY.DATA, EventUtils.TYPE.WEB_SERVICE,
                             "Added User", "Requested by user " + adminUser.getUsername(),
                             "Created new user " + user.getUsername() + " through OpenID connect."));
-        } catch (Exception ex2) {
-            log.warn("Ignoring exception:", ex2);
+            xdatUser.setAuthorization(auth);
+        } catch (Exception e) {
+            log.error("Failed to create user account for OpenID user {}", user.getUsername(), e);
+            throw new AuthenticationServiceException("Failed to create user account", e);
         }
 
-        // Send email notification
+        // Send email notifications
         try {
-            AdminUtils.sendNewUserNotification(xdatUser, "", "", "",
-                    new VelocityContext());
+            if (!autoVerified) {
+                AdminUtils.sendNewUserVerificationEmail(xdatUser);
+            } else {
+                AdminUtils.sendNewUserNotification(xdatUser, "", "", "", new VelocityContext());
+            }
         } catch (Exception e) {
-            log.error("Error sending new user notification email for user {}", xdatUser.getUsername(), e);
+            log.error("Error sending email notification for user {}", xdatUser.getUsername(), e);
         }
 
         return xdatUser;
