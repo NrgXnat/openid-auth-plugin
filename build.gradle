@@ -25,7 +25,7 @@ plugins {
 }
 
 group "au.edu.qcif.xnat.openid"
-version "1.4.1-RC-SNAPSHOT"
+version "1.4.1"
 description "XNAT OpenID Authentication Provider"
 
 repositories {
