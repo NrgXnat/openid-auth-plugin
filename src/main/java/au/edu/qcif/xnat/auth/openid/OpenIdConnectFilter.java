@@ -67,10 +67,13 @@ import org.springframework.security.web.authentication.AuthenticationSuccessHand
 import org.springframework.security.web.authentication.session.SessionAuthenticationStrategy;
 import org.springframework.stereotype.Component;
 
+import javax.servlet.ServletException;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import javax.servlet.http.HttpSession;
 import java.io.IOException;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.text.ParseException;
 import java.util.Arrays;
 import java.util.Collections;
@@ -240,8 +243,16 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         if (!xdatUser.isEnabled()) {
             throw new NewAutoAccountNotAutoEnabledException("New OpenID user, needs to to be enabled.", xdatUser);
         }
-        if ((getSiteConfigPreferences().getEmailVerification() && !xdatUser.isVerified()) || !xdatUser.isAccountNonLocked()) {
-            throw new CredentialsExpiredException("Attempted login to unverified or locked account: " + xdatUser.getUsername());
+        if (getSiteConfigPreferences().getEmailVerification() && !xdatUser.isVerified()) {
+            log.info("User {} is not verified, redirecting to verification page.", xdatUser.getUsername());
+            String encodedEmail = URLEncoder.encode(xdatUser.getEmail(), StandardCharsets.UTF_8.toString());
+            String encodedUsername = URLEncoder.encode(xdatUser.getUsername(), StandardCharsets.UTF_8.toString());
+            response.sendRedirect(TurbineUtils.GetFullServerPath() + "/app/template/VerificationSent.vm" +
+                    "?emailTo=" + encodedEmail + "&emailUsername=" + encodedUsername);
+            return null;
+        }
+        if (!xdatUser.isAccountNonLocked()) {
+            throw new CredentialsExpiredException("Attempted login to locked account: " + xdatUser.getUsername());
         }
 
         if (requesterUsername != null) {
@@ -259,10 +270,26 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         return null;
     }
 
+    /**
+     * Handles unsuccessful authentication attempts.
+     *
+     * Exception types thrown by attemptAuthentication:
+     * - NewAutoAccountNotAutoEnabledException: user not enabled, email domain not whitelisted, or provider disabled
+     * - CredentialsExpiredException: account locked (unverified users are redirected directly in attemptAuthentication)
+     * - BadCredentialsException: failed to get access token, parse ID token, or invalid username pattern
+     * - AuthenticationServiceException: failed to create user account
+     */
     @Override
     protected void unsuccessfulAuthentication(HttpServletRequest request, HttpServletResponse response,
-                                              AuthenticationException failed) throws IOException {
-        // Build a user-friendly error message indicating this is an OIDC error
+                                              AuthenticationException failed) throws IOException, ServletException {
+        // For NewAutoAccountNotAutoEnabledException and CredentialsExpiredException, delegate to the
+        // default XNAT failure handler (see XnatUrlAuthenticationFailureHandler)
+        if (failed instanceof NewAutoAccountNotAutoEnabledException || failed instanceof CredentialsExpiredException) {
+            super.unsuccessfulAuthentication(request, response, failed);
+            return;
+        }
+
+        // For other errors (BadCredentialsException, etc.), show a user-friendly OIDC-specific message
         String userMessage;
         if (failed instanceof BadCredentialsException) {
             String detail = failed.getMessage();
@@ -326,12 +353,15 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
             throw new AuthenticationServiceException("Failed to create user account", e);
         }
 
-        // Send email notification
+        // Send email notifications
         try {
-            AdminUtils.sendNewUserNotification(xdatUser, "", "", "",
-                    new VelocityContext());
+            if (!autoVerified) {
+                AdminUtils.sendNewUserVerificationEmail(xdatUser);
+            } else {
+                AdminUtils.sendNewUserNotification(xdatUser, "", "", "", new VelocityContext());
+            }
         } catch (Exception e) {
-            log.error("Error sending new user notification email for user {}", xdatUser.getUsername(), e);
+            log.error("Error sending email notification for user {}", xdatUser.getUsername(), e);
         }
 
         return xdatUser;

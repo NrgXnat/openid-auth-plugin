@@ -16,7 +16,7 @@ If you have `forceUserCreate=true`, you might need to change them to match the v
 * [PLUGINS-263](https://radiologics.atlassian.net/browse/PLUGINS-263)
   * Improved logging and error handling for invalid `usernamePattern` configuration
   * OIDC authentication errors now take users to the login page with an OIDC-specific error message instead of a stuck "Refreshing data type cache" modal
-
+* [PLUGINS-266](https://radiologics.atlassian.net/browse/PLUGINS-266) Fixed issue where newly created users got a confusing message and no verification email on first login when `auto.verified: false`
 
 ### <a name="1.4.0"></a>Version: 1.4.0
 
