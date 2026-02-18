@@ -7,11 +7,11 @@ import java.security.SecureRandom;
 import java.util.*;
 
 import lombok.Getter;
+import lombok.Setter;
 import org.apache.commons.codec.binary.Base64;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.http.HttpHeaders;
 import org.springframework.security.access.AccessDeniedException;
-import org.springframework.security.oauth2.client.filter.state.DefaultStateKeyGenerator;
 import org.springframework.security.oauth2.client.filter.state.StateKeyGenerator;
 import org.springframework.security.oauth2.client.resource.OAuth2AccessDeniedException;
 import org.springframework.security.oauth2.client.resource.OAuth2ProtectedResourceDetails;
@@ -22,6 +22,7 @@ import org.springframework.security.oauth2.client.token.grant.code.Authorization
 import org.springframework.security.oauth2.client.token.grant.code.AuthorizationCodeResourceDetails;
 import org.springframework.security.oauth2.common.OAuth2AccessToken;
 import org.springframework.security.oauth2.common.exceptions.InvalidRequestException;
+import org.springframework.security.oauth2.common.util.RandomValueStringGenerator;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 
@@ -30,19 +31,18 @@ import lombok.extern.slf4j.Slf4j;
 import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.CHUNK_SEPARATOR;
 
 @SuppressWarnings("deprecation")
+@Setter
 @Slf4j
 public class PkceAuthorizationCodeAccessTokenProvider extends AuthorizationCodeAccessTokenProvider {
 
-	private StateKeyGenerator stateKeyGenerator = new DefaultStateKeyGenerator();
+	private final RandomValueStringGenerator generator;
+	private final StateKeyGenerator          stateKeyGenerator;
 
 	private boolean stateMandatory = true;
 
-	public void setStateKeyGenerator(StateKeyGenerator stateKeyGenerator) {
-		this.stateKeyGenerator = stateKeyGenerator;
-	}
-
-	public void setStateMandatory(boolean stateMandatory) {
-		this.stateMandatory = stateMandatory;
+	public PkceAuthorizationCodeAccessTokenProvider(final int stateKeyLength) {
+		generator = new RandomValueStringGenerator(stateKeyLength);
+		stateKeyGenerator = resource -> generator.generate();
 	}
 
 	@Override

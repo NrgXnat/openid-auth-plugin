@@ -27,6 +27,7 @@ import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.collections.ListUtils;
+import org.apache.commons.collections.MapUtils;
 import org.apache.commons.lang3.RegExUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.velocity.VelocityContext;
@@ -93,7 +94,6 @@ import java.util.stream.Collectors;
 @Component
 public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter {
     private static final List<String> ALL_DOMAINS = Collections.singletonList("*");
-    private static final String PRE_ESTABLISHED_REDIRECT_URI_PROPERTY = "preEstablishedRedirUri";
 
     /**
      * Session attribute key for storing OpenID error messages to display on the login page.
@@ -114,8 +114,8 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
                                final XdatUserAuthService userAuthService,
                                final SiteConfigPreferences siteConfigPreferences,
                                final KeystoreService keystoreService) {
-        super(plugin.getProps().getProperty(PRE_ESTABLISHED_REDIRECT_URI_PROPERTY));
-        log.debug("Creating filter for URL {}", plugin.getProps().getProperty(PRE_ESTABLISHED_REDIRECT_URI_PROPERTY));
+        super(plugin.getRedirectUri());
+        log.debug("Creating filter for URL {}", plugin.getRedirectUri());
         setAuthenticationManager(new NoopAuthenticationManager());
         _plugin = plugin;
         _eventPublisher = eventPublisher;
@@ -272,7 +272,7 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
 
     /**
      * Handles unsuccessful authentication attempts.
-     *
+     * <p>
      * Exception types thrown by attemptAuthentication:
      * - NewAutoAccountNotAutoEnabledException: user not enabled, email domain not whitelisted, or provider disabled
      * - CredentialsExpiredException: account locked (unverified users are redirected directly in attemptAuthentication)
@@ -290,6 +290,16 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         }
 
         // For other errors (BadCredentialsException, etc.), show a user-friendly OIDC-specific message
+        String userMessage = getUserMessage(failed);
+
+        // Store the error message in session for the Login screen extension to pick up
+        request.getSession().setAttribute(OPENID_ERROR_MESSAGE, userMessage);
+
+        // Redirect to the login page
+        response.sendRedirect(TurbineUtils.GetFullServerPath() + "/app/template/Login.vm");
+    }
+
+    private static String getUserMessage(final AuthenticationException failed) {
         String userMessage;
         if (failed instanceof BadCredentialsException) {
             String detail = failed.getMessage();
@@ -301,12 +311,7 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         } else {
             userMessage = "OpenID Connect login failed. Please try again or contact your administrator if the problem persists.";
         }
-
-        // Store the error message in session for the Login screen extension to pick up
-        request.getSession().setAttribute(OPENID_ERROR_MESSAGE, userMessage);
-
-        // Redirect to the login page
-        response.sendRedirect(TurbineUtils.GetFullServerPath() + "/app/template/Login.vm");
+        return userMessage;
     }
 
     private JWTClaimsSet parseIdToken(final String idToken, final String providerId)
@@ -413,7 +418,8 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         final HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
         headers.set(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken);
-        return GenericUtils.convertToTypedMap(_restTemplate.exchange(userInfoEndpoint, HttpMethod.GET, new HttpEntity<>(headers), Map.class).getBody(), String.class, String.class);
+        final Map<?, ?> body = _restTemplate.exchange(userInfoEndpoint, HttpMethod.GET, new HttpEntity<>(headers), Map.class).getBody();
+        return MapUtils.isEmpty(body) ? Collections.emptyMap() : GenericUtils.convertToTypedMap(body, String.class, String.class);
     }
 
     /**
@@ -429,7 +435,7 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
     private static String sanitizeUsername(final String candidate) {
         final String transformed = RegExUtils.replaceAll(candidate, "[^a-zA-Z0-9-_'.]", "_");
         if (!Users.isValidUsername(transformed)) {
-            throw new IllegalArgumentException("The submitted username '" + candidate + "' does not comply with the required format and cannot be sanitized to a valid username.");
+            throw new AuthenticationServiceException("The submitted username '" + candidate + "' does not comply with the required format and cannot be sanitized to a valid username.");
         }
         return transformed;
     }
