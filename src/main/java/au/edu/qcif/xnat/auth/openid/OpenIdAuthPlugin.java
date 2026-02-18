@@ -25,6 +25,7 @@ import org.nrg.framework.annotations.XnatPlugin;
 import org.nrg.xdat.preferences.SiteConfigPreferences;
 import org.nrg.xnat.security.provider.AuthenticationProviderConfigurationLocator;
 import org.nrg.xnat.security.provider.ProviderAttributes;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.ComponentScan;
 import org.springframework.context.annotation.Scope;
@@ -52,6 +53,8 @@ import java.util.Properties;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.DEFAULT_REDIR_URI;
+import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.KEY_REDIR_URI;
 import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.PKCE_ENABLED;
 import static au.edu.qcif.xnat.auth.openid.service.KeystoreServiceImpl.ID_TOKEN_ENCRYPTION_ALG_PROPERTY;
 import static org.nrg.xdat.services.XdatUserAuthService.OPENID;
@@ -71,16 +74,14 @@ import static org.nrg.xdat.services.XdatUserAuthService.OPENID;
 @ComponentScan({"au.edu.qcif.xnat.auth.openid"})
 @Slf4j
 public class OpenIdAuthPlugin {
-    private static final AccessTokenProvider ACCESS_TOKEN_PROVIDER_CHAIN = new AccessTokenProviderChain(
-            Arrays.<AccessTokenProvider>asList(new PkceAuthorizationCodeAccessTokenProvider(),
-                    new ImplicitAccessTokenProvider(),
-                    new ResourceOwnerPasswordAccessTokenProvider(),
-                    new ClientCredentialsAccessTokenProvider()));
 
     private final AuthenticationProviderConfigurationLocator _locator;
     private final SiteConfigPreferences _siteConfigPreferences;
     private final Properties _props = new Properties();
     private final List<String> _openIdProviders = new ArrayList<>();
+
+    @Value("${openid.state-key-length:16}")
+    private int stateKeyLength;
 
     public OpenIdAuthPlugin(final AuthenticationProviderConfigurationLocator locator,
                             final SiteConfigPreferences siteConfigPreferences) {
@@ -103,6 +104,10 @@ public class OpenIdAuthPlugin {
 
     public Properties getProps() {
         return _props;
+    }
+
+    public String getRedirectUri() {
+        return StringUtils.prependIfMissing(_props.getProperty(KEY_REDIR_URI, DEFAULT_REDIR_URI), "/");
     }
 
     /**
@@ -146,6 +151,14 @@ public class OpenIdAuthPlugin {
     }
 
     @Bean
+    public AccessTokenProvider accessTokenProvider() {
+        return new AccessTokenProviderChain(Arrays.<AccessTokenProvider>asList(new PkceAuthorizationCodeAccessTokenProvider(stateKeyLength),
+                                                                               new ImplicitAccessTokenProvider(),
+                                                                               new ResourceOwnerPasswordAccessTokenProvider(),
+                                                                               new ClientCredentialsAccessTokenProvider()));
+    }
+
+    @Bean
     @Scope(value = WebApplicationContext.SCOPE_SESSION, proxyMode = ScopedProxyMode.TARGET_CLASS)
     public OAuth2RestTemplate restTemplate(final OAuth2ClientContext clientContext) {
         log.debug("At create rest template...");
@@ -156,19 +169,18 @@ public class OpenIdAuthPlugin {
         log.debug("Provider id is: {}", providerId);
         request.getSession().setAttribute("providerId", providerId);
         final OAuth2RestTemplate template = new OAuth2RestTemplate(getProtectedResourceDetails(providerId), clientContext);
-        template.setAccessTokenProvider(ACCESS_TOKEN_PROVIDER_CHAIN);
+        template.setAccessTokenProvider(accessTokenProvider());
         return template;
     }
 
     public AuthorizationCodeResourceDetails getProtectedResourceDetails(final String providerId) {
         log.debug("Creating protected resource details of provider: {}", providerId);
-        final String clientId = getProperty(providerId, "clientId");
-        final String clientSecret = getProperty(providerId, "clientSecret");
-        final String accessTokenUri = getProperty(providerId, "accessTokenUri");
-        final String userAuthUri = getProperty(providerId, "userAuthUri");
-        final String preEstablishedUri = StringUtils.getIfBlank(getProps().getProperty("siteUrl"), _siteConfigPreferences::getSiteUrl)
-                + StringUtils.prependIfMissing(getProps().getProperty("preEstablishedRedirUri"), "/");
-        final List<String> scopes = Arrays.asList(StringUtils.split(getProperty(providerId, "scopes"), ", "));
+        final String       clientId          = getProperty(providerId, "clientId");
+        final String       clientSecret      = getProperty(providerId, "clientSecret");
+        final String       accessTokenUri    = getProperty(providerId, "accessTokenUri");
+        final String       userAuthUri       = getProperty(providerId, "userAuthUri");
+        final String       preEstablishedUri = StringUtils.stripEnd(StringUtils.getIfBlank(getProps().getProperty("siteUrl"), _siteConfigPreferences::getSiteUrl), "/") + getRedirectUri();
+        final List<String> scopes            = Arrays.asList(StringUtils.split(getProperty(providerId, "scopes"), ", "));
 
         final PkceAuthorizationCodeResourceDetails details = new PkceAuthorizationCodeResourceDetails();
         details.setClientId(clientId);

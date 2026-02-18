@@ -6,10 +6,10 @@ pluginManagement {
     repositories {
         mavenLocal()
         gradlePluginPortal()
-        maven { url "https://nrgxnat.jfrog.io/nrgxnat/gradle-plugins-release" }
-        maven { url "https://nrgxnat.jfrog.io/nrgxnat/gradle-plugins-snapshot" }
-        maven { url "https://nrgxnat.jfrog.io/nrgxnat/libs-release" }
-        maven { url "https://nrgxnat.jfrog.io/nrgxnat/libs-snapshot" }
+        maven { url = "https://nrgxnat.jfrog.io/nrgxnat/gradle-plugins-release" }
+        maven { url = "https://nrgxnat.jfrog.io/nrgxnat/gradle-plugins-snapshot" }
+        maven { url = "https://nrgxnat.jfrog.io/nrgxnat/libs-release" }
+        maven { url = "https://nrgxnat.jfrog.io/nrgxnat/libs-snapshot" }
         mavenCentral()
     }
 }
