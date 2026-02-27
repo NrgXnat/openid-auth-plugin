@@ -258,7 +258,7 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         }
 
         if (requesterUsername != null) {
-            Authentication authentication = new OpenIdAuthToken(xdatUser, providerId);
+            Authentication authentication = new OpenIdAuthToken(xdatUser, providerId, authInfo);
 
             Authentication authRequestToken = new OpenIdAuthRequestToken(requesterUsername, providerId);
             _eventPublisher.publishAuthenticationSuccess(authRequestToken);

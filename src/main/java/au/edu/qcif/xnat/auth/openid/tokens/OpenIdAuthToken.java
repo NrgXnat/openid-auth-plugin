@@ -21,6 +21,8 @@ import org.nrg.xft.security.UserI;
 import org.nrg.xnat.security.tokens.AbstractXnatAuthenticationToken;
 import org.springframework.security.core.SpringSecurityCoreVersion;
 
+import java.util.Map;
+
 /**
  * Plugin's XNAT Auth token
  * 
@@ -30,9 +32,16 @@ import org.springframework.security.core.SpringSecurityCoreVersion;
 public class OpenIdAuthToken extends AbstractXnatAuthenticationToken {
 
 	private static final long serialVersionUID = SpringSecurityCoreVersion.SERIAL_VERSION_UID;;
+	private final Map<String, String> openIdUserInfo;
 
-	public OpenIdAuthToken(final UserI details, final String providerId) {
+
+	public OpenIdAuthToken(final UserI details, final String providerId, final Map<String, String> openIdUserInfo) {
 		super(providerId, details, null, details.getAuthorities());
+		this.openIdUserInfo = openIdUserInfo;
+	}
+
+	public Map<String, String> getOpenIdUserInfo() {
+		return openIdUserInfo;
 	}
 
 	public String toString() {

@@ -11,3 +11,4 @@ dep*.txt
 .classpath
 .project
 .DS_Store
+gradle.properties
