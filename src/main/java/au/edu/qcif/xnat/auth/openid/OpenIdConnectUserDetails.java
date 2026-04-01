@@ -43,14 +43,14 @@ public class OpenIdConnectUserDetails extends XDATUser {
 
     private       OAuth2AccessToken   token;
     private       String              email;
-    private final Map<String, String> openIdUserInfo;
+    private final Map<String, Object> openIdUserInfo;
     private       String              firstName;
     private       String              lastName;
     private       String              username;
     private final String              providerId;
     private final OpenIdAuthPlugin    plugin;
 
-    public OpenIdConnectUserDetails(String providerId, Map<String, String> userInfo, OAuth2AccessToken token, OpenIdAuthPlugin plugin) {
+    public OpenIdConnectUserDetails(String providerId, Map<String, Object> userInfo, OAuth2AccessToken token, OpenIdAuthPlugin plugin) {
         this.openIdUserInfo = userInfo;
         this.providerId     = providerId;
         this.setUsername(resolvePattern(plugin.getProperty(providerId, USERNAME_PATTERN)));
@@ -64,6 +64,19 @@ public class OpenIdConnectUserDetails extends XDATUser {
 
     public String getFieldValue(String fieldName) {
         String value = null;
+        try {
+            Field field = this.getClass().getDeclaredField(fieldName);
+            value = (String) field.get(this);
+        } catch (Exception e) {
+            if (openIdUserInfo != null) {
+                value = openIdUserInfo.get(fieldName).toString();
+            }
+        }
+        return value;
+    }
+
+    public Object getFieldValueObject(String fieldName) {
+        Object value = null;
         try {
             Field field = this.getClass().getDeclaredField(fieldName);
             value = (String) field.get(this);
@@ -115,9 +128,9 @@ public class OpenIdConnectUserDetails extends XDATUser {
         this.lastName = lastname;
     }
 
-    private String getUserInfo(final Map<String, String> userInfo, String propName) {
-        String propVal = userInfo.get(plugin.getProperty(providerId, propName));
-        return propVal != null ? propVal : "";
+    private String getUserInfo(final Map<String, Object> userInfo, String propName) {
+        Object propVal = userInfo.get(plugin.getProperty(providerId, propName));
+        return propVal != null ? propVal.toString() : "";
     }
 
     private String resolvePattern(final String usernamePattern) {

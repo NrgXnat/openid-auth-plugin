@@ -3,6 +3,7 @@ package au.edu.qcif.xnat.auth.openid;
 import au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant;
 import au.edu.qcif.xnat.auth.openid.service.KeystoreService;
 import au.edu.qcif.xnat.auth.openid.service.KeystoreServiceImpl;
+import au.edu.qcif.xnat.auth.openid.utils.OpenIdUtils;
 import lombok.extern.slf4j.Slf4j;
 import org.nrg.framework.configuration.ConfigPaths;
 import org.nrg.framework.configuration.SerializerConfig;
@@ -12,7 +13,9 @@ import org.nrg.xdat.preferences.SiteConfigPreferences;
 import org.nrg.xdat.security.services.UserManagementServiceI;
 import org.nrg.xdat.services.XdatUserAuthService;
 import org.nrg.xft.security.UserI;
+import org.nrg.xnat.security.OnXnatLogin;
 import org.nrg.xnat.security.provider.AuthenticationProviderConfigurationLocator;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
@@ -34,6 +37,7 @@ import java.nio.file.Paths;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Optional;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doNothing;
@@ -141,10 +145,13 @@ public class OpenIdConnectFilterTestConfig {
     }
 
     @Bean
-    public OpenIdConnectFilter openIdConnectFilter(final SiteConfigPreferences siteConfigPreferences,
+    public OpenIdConnectFilter openIdConnectFilter(
+            @Qualifier("onXnatLogin")  OnXnatLogin onXnatLogin,
+            @Qualifier(OpenIdUtils.ALTERNATE_SUCCESS_HANDLER) Optional<AuthenticationSuccessHandler> oidcSuccessHandler,
+            final SiteConfigPreferences siteConfigPreferences,
                                                    final KeystoreService keystoreService,
                                                    final OpenIdAuthPlugin openIdAuthPlugin,
                                                    final AuthenticationEventPublisher authenticationEventPublisher) {
-        return new OpenIdConnectFilter(openIdAuthPlugin, authenticationEventPublisher, userAuthService(), siteConfigPreferences, keystoreService);
+        return new OpenIdConnectFilter(oidcSuccessHandler, openIdAuthPlugin, authenticationEventPublisher, userAuthService(), siteConfigPreferences, keystoreService);
     }
 }

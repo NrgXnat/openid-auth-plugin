@@ -20,6 +20,7 @@ package au.edu.qcif.xnat.auth.openid;
 import au.edu.qcif.xnat.auth.openid.service.KeystoreService;
 import au.edu.qcif.xnat.auth.openid.tokens.OpenIdAuthRequestToken;
 import au.edu.qcif.xnat.auth.openid.tokens.OpenIdAuthToken;
+import au.edu.qcif.xnat.auth.openid.utils.OpenIdUtils;
 import com.nimbusds.jose.JOSEException;
 import com.nimbusds.jose.crypto.RSADecrypter;
 import com.nimbusds.jwt.EncryptedJWT;
@@ -32,6 +33,7 @@ import org.apache.commons.lang3.StringUtils;
 import org.apache.velocity.VelocityContext;
 import org.nrg.framework.generics.GenericUtils;
 import org.nrg.xapi.exceptions.NotFoundException;
+import org.nrg.xdat.XDAT;
 import org.nrg.xdat.entities.XdatUserAuth;
 import org.nrg.xdat.exceptions.UsernameAuthMappingNotFoundException;
 import org.nrg.xdat.preferences.SiteConfigPreferences;
@@ -44,8 +46,10 @@ import org.nrg.xdat.turbine.utils.TurbineUtils;
 import org.nrg.xft.event.EventDetails;
 import org.nrg.xft.event.EventUtils;
 import org.nrg.xft.security.UserI;
+import org.nrg.xnat.security.OnXnatLogin;
 import org.nrg.xnat.security.exceptions.NewAutoAccountNotAutoEnabledException;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
@@ -79,6 +83,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -94,6 +99,7 @@ import java.util.stream.Collectors;
 public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter {
     private static final List<String> ALL_DOMAINS = Collections.singletonList("*");
     private static final String PRE_ESTABLISHED_REDIRECT_URI_PROPERTY = "preEstablishedRedirUri";
+    private static final String USER_INFO_URI = "userInfoUri";
 
     /**
      * Session attribute key for storing OpenID error messages to display on the login page.
@@ -111,12 +117,17 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
 
     private static final String DEFAULT_REDIRECT_URI = "/openid/callback";
 
-    public OpenIdConnectFilter(final OpenIdAuthPlugin plugin,
+    public OpenIdConnectFilter(
+            @Qualifier(OpenIdUtils.ALTERNATE_SUCCESS_HANDLER) Optional<AuthenticationSuccessHandler> oidcSuccessHandler,
+            final OpenIdAuthPlugin plugin,
                                final AuthenticationEventPublisher eventPublisher,
                                final XdatUserAuthService userAuthService,
                                final SiteConfigPreferences siteConfigPreferences,
                                final KeystoreService keystoreService) {
         super(StringUtils.defaultIfBlank(plugin.getProps().getProperty(PRE_ESTABLISHED_REDIRECT_URI_PROPERTY), DEFAULT_REDIRECT_URI));
+        OnXnatLogin onXnatLogin = XDAT.getContextService().getBean(OnXnatLogin.class);
+        super.setAuthenticationSuccessHandler(oidcSuccessHandler.orElse(onXnatLogin));
+
         log.debug("Creating filter for URL {}", StringUtils.defaultIfBlank(plugin.getProps().getProperty(PRE_ESTABLISHED_REDIRECT_URI_PROPERTY), DEFAULT_REDIRECT_URI));
         setAuthenticationManager(new NoopAuthenticationManager());
         _plugin = plugin;
@@ -126,12 +137,6 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         _keystoreService = keystoreService;
 
         _allowedDomains = _plugin.getEnabledProviders().stream().collect(Collectors.toMap(Function.identity(), this::getAllowedEmailDomains));
-    }
-
-    @Autowired
-    @Override
-    public void setAuthenticationSuccessHandler(final AuthenticationSuccessHandler handler) {
-        super.setAuthenticationSuccessHandler(handler);
     }
 
     @Autowired
@@ -196,17 +201,17 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
             throw new BadCredentialsException("Provider not configured", e);
         }
 
-        final Map<String, String> authInfo = claimsSet.getClaims().entrySet().stream()
+        final Map<String, Object> authInfo = claimsSet.getClaims().entrySet().stream()
                 .collect(Collectors.toMap(
                         Map.Entry::getKey,
-                        e -> e.getValue() != null ? e.getValue().toString() : ""
+                        e -> e.getValue() != null ? e.getValue() : ""
                 ));
 
         log.debug("===== : {}", authInfo);
-        final String userInfoUri = _plugin.getProperty(providerId, "userInfoUri");
+        final String userInfoUri = _plugin.getProperty(providerId, USER_INFO_URI);
 
         if (!StringUtils.isEmpty(userInfoUri)) {
-            Map<String, String> userInfo = getUserInfo(accessToken.getValue(), userInfoUri);
+            Map<String, Object> userInfo = getUserInfo(accessToken.getValue(), userInfoUri);
             authInfo.putAll(userInfo);
         }
 
@@ -410,12 +415,12 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         return _siteConfigPreferences;
     }
 
-    private Map<String, String> getUserInfo(final String accessToken, final String userInfoEndpoint) {
+    private Map<String, Object> getUserInfo(final String accessToken, final String userInfoEndpoint) {
         // See https://openid.net/specs/openid-connect-core-1_0.html#UserInfo
         final HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
         headers.set(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken);
-        return GenericUtils.convertToTypedMap(_restTemplate.exchange(userInfoEndpoint, HttpMethod.GET, new HttpEntity<>(headers), Map.class).getBody(), String.class, String.class);
+        return GenericUtils.convertToTypedMap(_restTemplate.exchange(userInfoEndpoint, HttpMethod.GET, new HttpEntity<>(headers), Map.class).getBody(), String.class, Object.class);
     }
 
     /**

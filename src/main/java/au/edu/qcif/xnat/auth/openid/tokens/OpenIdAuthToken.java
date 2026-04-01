@@ -32,15 +32,15 @@ import java.util.Map;
 public class OpenIdAuthToken extends AbstractXnatAuthenticationToken {
 
 	private static final long serialVersionUID = SpringSecurityCoreVersion.SERIAL_VERSION_UID;;
-	private final Map<String, String> openIdUserInfo;
+	private final Map<String, Object> openIdUserInfo;
 
 
-	public OpenIdAuthToken(final UserI details, final String providerId, final Map<String, String> openIdUserInfo) {
+	public OpenIdAuthToken(final UserI details, final String providerId, final Map<String, Object> openIdUserInfo) {
 		super(providerId, details, null, details.getAuthorities());
 		this.openIdUserInfo = openIdUserInfo;
 	}
 
-	public Map<String, String> getOpenIdUserInfo() {
+	public Map<String, Object> getOpenIdUserInfo() {
 		return openIdUserInfo;
 	}
 
