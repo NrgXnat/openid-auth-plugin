@@ -7,6 +7,13 @@ Adds OpenID Connect (OIDC) authentication support to XNAT.
 If you have `forceUserCreate=true`, you might need to change them to match the values in `userAutoEnabled` and `userAutoVerified`. If you have `forceUserCreate=false`, you probably already needed to set
 `auto.enabled` and `auto.verified` per your desired configuration.
 
+### <a name="1.4.2"></a>Version: 1.4.2
+
+#### 1.4.2 - Improvements
+* [PLUGINS-274](https://radiologics.atlassian.net/browse/PLUGINS-274)
+  * Updated the state-key generator to create 16-character strings to support newer versions of OAuth
+
+
 ### <a name="1.4.1"></a>Version: 1.4.1
 
 #### 1.4.1 - Fixes
