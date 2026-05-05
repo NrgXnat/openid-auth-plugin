@@ -2,6 +2,18 @@
 
 Adds OpenID Connect (OIDC) authentication support to XNAT.
 
+## <a name="1.5.0"></a>OpenID Authentication Plugin Version 1.5.x Release Notes
+**BREAKING CHANGE:** 1.5.0 is compiled in Java21 and has dependency updates that require XNAT 1.10.0. 
+
+### <a name="1.5.0"></a>Version 1.5.0
+
+#### 1.5.0 - Fixes
+* [PLUGINS-274](https://radiologics.atlassian.net/browse/PLUGINS-274)
+  * Enable usage of longer keys via custom-state generator 
+* [PLUGINS-293](https://radiologics.atlassian.net/browse/PLUGINS-293)
+  * Fix startup failure when no OpenID providers are specified 
+
+
 ## <a name="1.4.0"></a>OpenID Authentication Plugin Version 1.4.x Release Notes
 **BREAKING CHANGE:** 1.4.0 removes duplicative properties `userAutoEnabled` and `userAutoVerified`. Before installing 1.4.0, make sure you have set `auto.enabled` and `auto.verified` appropriately. 
 If you have `forceUserCreate=true`, you might need to change them to match the values in `userAutoEnabled` and `userAutoVerified`. If you have `forceUserCreate=false`, you probably already needed to set
