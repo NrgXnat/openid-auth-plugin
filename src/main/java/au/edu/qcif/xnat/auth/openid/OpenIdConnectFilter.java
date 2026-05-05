@@ -109,6 +109,8 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
 
     private OAuth2RestTemplate _restTemplate;
 
+    private static final String DEFAULT_REDIRECT_URI = "/openid/callback";
+
     public OpenIdConnectFilter(final OpenIdAuthPlugin plugin,
                                final AuthenticationEventPublisher eventPublisher,
                                final XdatUserAuthService userAuthService,

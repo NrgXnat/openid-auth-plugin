@@ -5,7 +5,7 @@
 
 buildscript {
     ext {
-        vXnat = "1.9.2"
+        vXnat = "1.10.0"
     }
 }
 
@@ -17,25 +17,23 @@ plugins {
     id "java"
     id "maven-publish"
     id "com.dorongold.task-tree" version "1.5"
-    id "com.palantir.git-version" version "0.12.1"
+    id "com.palantir.git-version" version "4.3.0"
     id "io.franzbecker.gradle-lombok" version "5.0.0"
-    id "io.spring.dependency-management" version "1.0.14.RELEASE"
+    id "io.spring.dependency-management" version "1.1.7"
     id "net.linguica.maven-settings" version "0.5"
-    id "org.nrg.xnat.build.xnat-data-builder" version "1.9.2"
+    id "org.nrg.xnat.build.xnat-data-builder" version "${vXnat}"
 }
 
-group "au.edu.qcif.xnat.openid"
-version "1.4.2-SNAPSHOT"
-description "XNAT OpenID Authentication Provider"
+group = "au.edu.qcif.xnat.openid"
+version = "1.5.0-SNAPSHOT"
+description = "XNAT OpenID Authentication Provider"
 
 repositories {
     mavenLocal()
-    maven { url "https://nrgxnat.jfrog.io/nrgxnat/libs-release" }
-    maven { url "https://nrgxnat.jfrog.io/nrgxnat/libs-snapshot" }
+    maven { url = "https://nrgxnat.jfrog.io/nrgxnat/libs-release" }
+    maven { url = "https://nrgxnat.jfrog.io/nrgxnat/libs-snapshot" }
     mavenCentral()
 }
-
-mainClassName = "ValidateLdap"
 
 configurations {
     implementation.extendsFrom(implementAndInclude)
@@ -85,8 +83,8 @@ dependencies {
 }
 
 java {
-    sourceCompatibility = JavaVersion.VERSION_1_8
-    targetCompatibility = JavaVersion.VERSION_1_8
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
     withSourcesJar()
     withJavadocJar()
 }
@@ -132,20 +130,6 @@ try {
     isCleanTag = false
 }
 
-ext.gitManifest = manifest {
-    attributes "Application-Name": project.description,
-            "Build-Date": buildDate,
-            "Build-Number": buildNumber,
-            "Implementation-Version": project.version,
-            "Implementation-Sha": gitHash,
-            "Implementation-Sha-Full": gitHashFull,
-            "Implementation-Commit": commitDistance,
-            "Implementation-LastTag": lastTag,
-            "Implementation-Branch": branchName,
-            "Implementation-CleanTag": isCleanTag,
-            "Implementation-Dirty": isDirty
-}
-
 logger.info """
 Building artifacts with manifest attributes:
 
@@ -161,19 +145,9 @@ Building artifacts with manifest attributes:
  * Implementation-Dirty:    ${isDirty}
 """
 
-jar {
-    enabled = true
-    manifest {
-        from gitManifest
-    }
-}
-
 task xnatPluginJar(type: Jar) {
-    zip64 true
+    zip64 = true
     archiveClassifier.set "xpl"
-    manifest {
-        from gitManifest
-    }
     // files and folders with "-dev" or "--xx" in their name
     // will not be in the compiled jar
     exclude "**/resources/**/*-dev**"
@@ -188,10 +162,25 @@ task xnatPluginJar(type: Jar) {
     with jar
 }
 
+lombok {
+    version = dependencyManagement.importedProperties["lombok.version"] as String
+    sha256 = dependencyManagement.importedProperties["lombok.checksum"] as String
+}
+
 tasks.withType(Jar).configureEach {
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
     manifest {
-        from gitManifest
+        attributes "Application-Name": project.description,
+                "Build-Date": buildDate,
+                "Build-Number": buildNumber,
+                "Implementation-Version": project.version,
+                "Implementation-Sha": gitHash,
+                "Implementation-Sha-Full": gitHashFull,
+                "Implementation-Commit": commitDistance,
+                "Implementation-LastTag": lastTag,
+                "Implementation-Branch": branchName,
+                "Implementation-CleanTag": isCleanTag,
+                "Implementation-Dirty": isDirty
     }
 }
 
@@ -270,7 +259,7 @@ publishing {
     }
     repositories {
         maven {
-            url "https://nrgxnat.jfrog.io/nrgxnat/libs-${project.version.endsWith("-SNAPSHOT") ? "snapshot" : "release"}"
+            url = "https://nrgxnat.jfrog.io/nrgxnat/libs-${project.version.endsWith("-SNAPSHOT") ? "snapshot" : "release"}"
             // The value for name must match <id> in ~/.m2/settings.xml
             name = "XNAT_Artifactory"
         }
