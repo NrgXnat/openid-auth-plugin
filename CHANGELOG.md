@@ -8,10 +8,8 @@ Adds OpenID Connect (OIDC) authentication support to XNAT.
 ### <a name="1.5.0"></a>Version 1.5.0
 
 #### 1.5.0 - Fixes
-* [PLUGINS-274](https://radiologics.atlassian.net/browse/PLUGINS-274)
-  * Enable usage of longer keys via custom-state generator 
-* [PLUGINS-293](https://radiologics.atlassian.net/browse/PLUGINS-293)
-  * Fix startup failure when no OpenID providers are specified 
+* [PLUGINS-274](https://radiologics.atlassian.net/browse/PLUGINS-274) Enable usage of longer keys via custom-state generator 
+* [PLUGINS-293](https://radiologics.atlassian.net/browse/PLUGINS-293) Fix startup failure when no OpenID providers are specified 
 
 
 ## <a name="1.4.0"></a>OpenID Authentication Plugin Version 1.4.x Release Notes
@@ -23,11 +21,11 @@ If you have `forceUserCreate=true`, you might need to change them to match the v
 
 #### 1.4.1 - Fixes
 * [PLUGINS-265](https://radiologics.atlassian.net/browse/PLUGINS-265)
-  * Fixed issue where newly created users were locked out on first login if `auto.enabled: true`
-  * Exceptions during user creation are no longer swallowed
+    * Fixed issue where newly created users were locked out on first login if `auto.enabled: true`
+    * Exceptions during user creation are no longer swallowed
 * [PLUGINS-263](https://radiologics.atlassian.net/browse/PLUGINS-263)
-  * Improved logging and error handling for invalid `usernamePattern` configuration
-  * OIDC authentication errors now take users to the login page with an OIDC-specific error message instead of a stuck "Refreshing data type cache" modal
+    * Improved logging and error handling for invalid `usernamePattern` configuration
+    * OIDC authentication errors now take users to the login page with an OIDC-specific error message instead of a stuck "Refreshing data type cache" modal
 * [PLUGINS-266](https://radiologics.atlassian.net/browse/PLUGINS-266) Fixed issue where newly created users got a confusing message and no verification email on first login when `auto.verified: false`
 
 ### <a name="1.4.0"></a>Version: 1.4.0
