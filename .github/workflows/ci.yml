@@ -20,6 +20,16 @@ jobs:
           java-version: "21"
           cache: gradle
 
+      # actions/setup-java writes a default ~/.m2/settings.xml with server
+      # credentials. The net.linguica.maven-settings plugin (applied in
+      # build.gradle) tries to decrypt those at configuration time and fails
+      # ("Unable to decrypt local Maven settings credentials") because the
+      # runner has no Maven master password. This job only runs tests and
+      # never publishes, so we remove the file. Drop this step once the build
+      # no longer applies the maven-settings plugin in test-only contexts.
+      - name: Remove generated Maven settings
+        run: rm -f ~/.m2/settings.xml
+
       - name: Run tests and coverage report
         run: ./gradlew test jacocoTestReport --no-daemon
 
