@@ -33,6 +33,15 @@ jobs:
       - name: Run tests and coverage report
         run: ./gradlew test jacocoTestReport --no-daemon
 
+      # Render the JUnit XML that Gradle writes to build/test-results/test
+      # into the workflow run's summary page. Runs on always() so results
+      # are reported even when the test step above fails.
+      - name: Test summary
+        uses: test-summary/action@37b508cfee6d4d080eedd00b5bb240a6a784a6a5 # v2.6
+        if: always()
+        with:
+          paths: build/test-results/test/TEST-*.xml
+
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v7
