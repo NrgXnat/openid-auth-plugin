@@ -198,6 +198,19 @@ sourceSets {
 test {
     useJUnit()
     maxHeapSize = "1G"
+
+    testLogging {
+        // Log each test as it passes/skips/fails so CI shows live progress
+        // instead of going silent until the build finishes.
+        events "passed", "skipped", "failed"
+        // Forward the tests' own System.out/System.err to the build output.
+        showStandardStreams = true
+        // Print full stack traces (with causes) for failures.
+        exceptionFormat = "full"
+        showExceptions = true
+        showCauses = true
+        showStackTraces = true
+    }
 }
 
 publishing {
