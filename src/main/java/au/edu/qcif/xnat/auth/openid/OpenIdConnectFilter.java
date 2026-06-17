@@ -32,22 +32,15 @@ import com.nimbusds.jwt.SignedJWT;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.collections.ListUtils;
 import org.apache.commons.collections.MapUtils;
-import org.apache.commons.lang3.RegExUtils;
 import org.apache.commons.lang3.StringUtils;
-import org.apache.velocity.VelocityContext;
 import org.nrg.framework.generics.GenericUtils;
 import org.nrg.xapi.exceptions.NotFoundException;
-import org.nrg.xdat.entities.XdatUserAuth;
 import org.nrg.xdat.exceptions.UsernameAuthMappingNotFoundException;
 import org.nrg.xdat.preferences.SiteConfigPreferences;
 import org.nrg.xdat.security.helpers.UserHelper;
-import org.nrg.xdat.security.helpers.Users;
 import org.nrg.xdat.services.XdatUserAuthService;
 import org.nrg.xdat.turbine.utils.AccessLogger;
-import org.nrg.xdat.turbine.utils.AdminUtils;
 import org.nrg.xdat.turbine.utils.TurbineUtils;
-import org.nrg.xft.event.EventDetails;
-import org.nrg.xft.event.EventUtils;
 import org.nrg.xft.security.UserI;
 import org.nrg.xnat.security.exceptions.NewAutoAccountNotAutoEnabledException;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -57,7 +50,6 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.security.authentication.AuthenticationEventPublisher;
 import org.springframework.security.authentication.AuthenticationManager;
-import org.springframework.security.authentication.AuthenticationServiceException;
 import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.authentication.CredentialsExpiredException;
 import org.springframework.security.core.Authentication;
@@ -106,11 +98,11 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
 
     private final OpenIdAuthPlugin _plugin;
     private final AuthenticationEventPublisher _eventPublisher;
-    private final XdatUserAuthService _userAuthService;
     private final SiteConfigPreferences _siteConfigPreferences;
     private final Map<String, List<String>> _allowedDomains;
     private final KeystoreService _keystoreService;
     private final ClaimGateFactory _gateFactory;
+    private final OpenIdUserResolver _userResolver;
 
     private OAuth2RestTemplate _restTemplate;
 
@@ -126,10 +118,10 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         setAuthenticationManager(new NoopAuthenticationManager());
         _plugin = plugin;
         _eventPublisher = eventPublisher;
-        _userAuthService = userAuthService;
         _siteConfigPreferences = siteConfigPreferences;
         _keystoreService = keystoreService;
         _gateFactory = new ClaimGateFactory(plugin);
+        _userResolver = new OpenIdUserResolver(plugin, userAuthService);
 
         _allowedDomains = _plugin.getEnabledProviders().stream().collect(Collectors.toMap(Function.identity(), this::getAllowedEmailDomains));
     }
@@ -238,10 +230,10 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         String requesterUsername = null;
         try {
             requesterUsername = user.getUsername();
-            xdatUser = _userAuthService.getUserDetailsByNameAndAuth(requesterUsername, XdatUserAuthService.OPENID, providerId);
+            xdatUser = _userResolver.resolveExisting(requesterUsername, providerId);
         } catch (UsernameAuthMappingNotFoundException e) {
             if (Boolean.parseBoolean(_plugin.getProperty(providerId, "forceUserCreate"))) {
-                xdatUser = createUserAccount(providerId, user);
+                xdatUser = _userResolver.createUser(providerId, user);
             } else {
                 // Give users an option to register or connect OpenID Account with an XNAT account
                 log.info("User {} attempted to log using authentication provider ID {}, diverting to account merge page.", user.getUsername(), providerId);
@@ -341,47 +333,6 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         return idToken.split("\\.").length == 5;
     }
 
-    private UserI createUserAccount(final String providerId, final OpenIdConnectUserDetails user) throws AuthenticationException {
-        // Use standard XNAT provider attributes (auto.enabled/auto.verified) for consistency with other authentication providers
-        boolean autoEnabled = _plugin.isAutoEnabled(providerId);
-        boolean autoVerified = _plugin.isAutoVerified(providerId);
-
-        UserI xdatUser = Users.createUser();
-        xdatUser.setLogin(sanitizeUsername(user.getUsername()));
-        xdatUser.setFirstname(user.getFirstname());
-        xdatUser.setLastname(user.getLastname());
-        xdatUser.setEmail(user.getEmail());
-        xdatUser.setEnabled(autoEnabled);
-        xdatUser.setVerified(autoVerified);
-
-        log.info("Create user, username: {}", xdatUser.getUsername());
-        try {
-            UserI adminUser = Users.getAdminUser();
-            XdatUserAuth auth = new XdatUserAuth(user.getUsername(), XdatUserAuthService.OPENID, providerId, xdatUser.getLogin(), true, 0);
-            Users.save(xdatUser, adminUser, auth,
-                    false, new EventDetails(EventUtils.CATEGORY.DATA, EventUtils.TYPE.WEB_SERVICE,
-                            "Added User", "Requested by user " + adminUser.getUsername(),
-                            "Created new user " + user.getUsername() + " through OpenID connect."));
-            xdatUser.setAuthorization(auth);
-        } catch (Exception e) {
-            log.error("Failed to create user account for OpenID user {}", user.getUsername(), e);
-            throw new AuthenticationServiceException("Failed to create user account", e);
-        }
-
-        // Send email notifications
-        try {
-            if (!autoVerified) {
-                AdminUtils.sendNewUserVerificationEmail(xdatUser);
-            } else {
-                AdminUtils.sendNewUserNotification(xdatUser, "", "", "", new VelocityContext());
-            }
-        } catch (Exception e) {
-            log.error("Error sending email notification for user {}", xdatUser.getUsername(), e);
-        }
-
-        return xdatUser;
-    }
-
     /**
      * Runs the claim-validation gates enabled for the interactive ID-token path against the parsed
      * token claims. A gate failure means the credential is valid but the caller is not authorized;
@@ -448,24 +399,6 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         headers.set(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken);
         final Map<?, ?> body = _restTemplate.exchange(userInfoEndpoint, HttpMethod.GET, new HttpEntity<>(headers), Map.class).getBody();
         return MapUtils.isEmpty(body) ? Collections.emptyMap() : GenericUtils.convertToTypedMap(body, String.class, String.class);
-    }
-
-    /**
-     * Replace all characters in the submitted username that are not alphanumeric, dash, underscore, apostrophe, or
-     * period with an underscore. This is useful for sanitizing usernames that may have been submitted by users
-     * that do not comply with the {@link Users#isValidUsername(String) required format}.
-     *
-     * @param candidate The proposed username to sanitize.
-     * @return The sanitized username.
-     * @throws IllegalArgumentException If the candidate username can't be sanitized to a valid username, e.g. too long or doesn't start with a letter.
-     */
-    // TODO: This is here to provide compatibility with older versions of XNAT, but eventually should use XNAT's version of this method.
-    private static String sanitizeUsername(final String candidate) {
-        final String transformed = RegExUtils.replaceAll(candidate, "[^a-zA-Z0-9-_'.]", "_");
-        if (!Users.isValidUsername(transformed)) {
-            throw new AuthenticationServiceException("The submitted username '" + candidate + "' does not comply with the required format and cannot be sanitized to a valid username.");
-        }
-        return transformed;
     }
 
     private static class NoopAuthenticationManager implements AuthenticationManager {
