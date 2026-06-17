@@ -151,6 +151,62 @@ overriding the shared toggle above for this path. Defaults to the shared toggle,
 Enable (or, with `false`, disable) the audience / role gate on the bearer-token path, overriding the
 shared toggle above for this path. Defaults to the shared toggle, otherwise `false`.
 
+### Bearer-token authentication
+
+In addition to the interactive login flow, the plugin can authenticate REST requests that present
+an access token minted by the OpenID provider:
+
+```
+Authorization: Bearer <jwt>
+```
+
+This path is **opt-in per provider** and **off by default**. When enabled, the bearer filter runs
+on every request but is a strict no-op unless an `Authorization: Bearer` header is present, and it
+short-circuits when the request is already authenticated (e.g. a session cookie). A bearer-
+authenticated request is **stateless** — no XNAT session (`JSESSIONID`) is created for it.
+
+Because a bearer token arrives from an untrusted client (unlike the interactive ID token, which
+XNAT receives directly from the token endpoint), it is fully validated: the RSA signature is
+verified against the provider's published keys, and the `iss` and `exp` claims are checked. Only
+the `RS256`/`RS384`/`RS512` algorithms are accepted.
+
+**Status codes:**
+
+| Condition | Status |
+|-----------|--------|
+| Token invalid, expired, wrong/unknown issuer, or unverifiable | **401 Unauthorized** |
+| Token valid but fails a `bearer.*` claim gate | **403 Forbidden** |
+| Token valid but no XNAT account is mapped (and auto-create is off), or the account is disabled/locked | **403 Forbidden** |
+
+A bearer caller resolves to the same XNAT user that a prior interactive login would create for that
+identity (both derive `auth_user` from the same `usernamePattern`).
+
+> **Recommended:** enable `openid.providerId.bearer.audCheck.enabled` and configure
+> `openid.providerId.audCheck.acceptedAudiences`. On the bearer path the `aud` claim is the
+> confinement boundary that stops a token minted for another client from being replayed against XNAT.
+
+#### openid.`providerId`.bearer.enabled
+
+Master switch for the bearer-token path for this provider. Default `false`. When `true`, both
+`openid.providerId.issuer` and `openid.providerId.jwksUri` must also be configured (a provider
+missing either is excluded from the bearer path and logged at error level — fail-closed).
+
+#### openid.`providerId`.issuer
+
+The exact `iss` value expected in bearer tokens from this provider. Also used to route an inbound
+token to the right provider. Required when `bearer.enabled` is `true`.
+
+#### openid.`providerId`.jwksUri
+
+The provider's JWKS (JSON Web Key Set) endpoint. Its public keys verify the bearer token signature;
+the key set is cached and re-fetched on key rotation. Required when `bearer.enabled` is `true`.
+
+#### openid.`providerId`.bearer.forceUserCreate
+
+Whether to auto-create an XNAT account for a validated bearer-token identity that has no existing
+mapping. If unset, falls back to the shared `openid.providerId.forceUserCreate`. When neither is
+`true`, an unmapped identity is denied with 403.
+
 ### auto.enabled
 
 Standard XNAT provider attribute that sets the `enabled` property of new users. Set to `false` to require admins to manually enable users before allowing logins, set to `true` to allow immediate access.
