@@ -5,6 +5,14 @@ Adds OpenID Connect (OIDC) authentication support to XNAT.
 ## <a name="1.5.0"></a>OpenID Authentication Plugin Version 1.5.x Release Notes
 **BREAKING CHANGE:** 1.5.0 is compiled in Java21 and has dependency updates that require XNAT 1.10.0. 
 
+### <a name="1.5.1"></a>Version 1.5.1
+
+#### 1.5.1 - New Features
+* Added optional, configurable claim-validation gates for token authorization:
+    * **Audience (`aud`) gate** — rejects a token whose audience does not contain one of the configured accepted audiences (`openid.<providerId>.audCheck.acceptedAudiences`).
+    * **Role gate** — rejects a token that carries none of the configured required roles (any-of), read from a configurable nested claim path such as `resource_access.<client>.roles` (`openid.<providerId>.roleCheck.rolePath` and `roleCheck.requiredRoles`).
+    * Both gates are opt-in (default off) and toggle independently per path via `openid.<providerId>.idToken.{audCheck,roleCheck}.enabled` and `openid.<providerId>.bearer.{audCheck,roleCheck}.enabled`. Wired into the interactive ID-token path; the path-agnostic gate infrastructure is ready for the upcoming bearer-token path. See the README for full configuration details.
+
 ### <a name="1.5.0"></a>Version 1.5.0
 
 #### 1.5.0 - Fixes
