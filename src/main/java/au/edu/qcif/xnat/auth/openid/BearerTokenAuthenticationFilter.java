@@ -7,6 +7,8 @@ import au.edu.qcif.xnat.auth.openid.gate.ClaimGateFactory;
 import au.edu.qcif.xnat.auth.openid.tokens.OpenIdAuthToken;
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
+import java.net.URI;
+import java.net.URISyntaxException;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 import org.nrg.xdat.exceptions.UsernameAuthMappingNotFoundException;
@@ -25,7 +27,6 @@ import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.net.MalformedURLException;
-import java.net.URL;
 import java.text.ParseException;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -98,8 +99,8 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter {
             final String issuer = plugin.getProperty(providerId, "issuer");
             final String jwksUri = plugin.getProperty(providerId, "jwksUri");
             try {
-                validators.put(providerId, BearerTokenValidator.forRemoteJwks(issuer, new URL(jwksUri)));
-            } catch (final MalformedURLException e) {
+                validators.put(providerId, BearerTokenValidator.forRemoteJwks(issuer, (new URI(jwksUri)).toURL()));
+            } catch (final MalformedURLException | URISyntaxException e) {
                 log.error("Provider '{}' has a malformed jwksUri '{}' — the bearer path is disabled for it.",
                         providerId, jwksUri, e);
             }
