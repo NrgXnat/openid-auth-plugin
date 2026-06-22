@@ -55,7 +55,7 @@ class BearerTokenValidator {
      * refresh for key rotation), per the nimbus defaults.
      */
     static BearerTokenValidator forRemoteJwks(final String expectedIssuer, final URL jwksUri) {
-        return new BearerTokenValidator(expectedIssuer, JWKSourceBuilder.<SecurityContext>create(jwksUri).build());
+        return new BearerTokenValidator(expectedIssuer, JWKSourceBuilder.create(jwksUri).build());
     }
 
     /**
