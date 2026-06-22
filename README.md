@@ -158,11 +158,11 @@ The property names used to populate user information during user creation. These
 
 ### openid.`providerId`.pkceEnabled
 
-Flag to enable the PKCE feature in the authrozation code grant flow
+Flag to enable the PKCE feature in the authorization code grant flow
 
 ### openid.`providerId`.usernamePattern
 
-Default pattern to define auth_user field of the xhbm_xdat_user_auth table
+Default pattern to define `auth_user` field of the `xhbm_xdat_user_auth` table
 
 ### openid.`providerId`.idTokenEncryptionAlgorithm
 
