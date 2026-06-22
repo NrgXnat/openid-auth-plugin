@@ -13,9 +13,7 @@ import java.util.Set;
 /**
  * Helpers for reading nested values out of a {@link JWTClaimsSet}.
  *
- * <p>The interactive filter flattens all claims to {@code Map<String,String>} via {@code toString()},
- * which collapses a nested claim such as Keycloak's {@code resource_access} into a useless string.
- * These helpers instead walk the structured {@link JWTClaimsSet#getClaims()} map so gates can read
+ * <p>These helpers walk the structured {@link JWTClaimsSet#getClaims()} map so gates can read
  * deeply nested values like {@code resource_access.xnat.roles}.</p>
  */
 final class ClaimPaths {
