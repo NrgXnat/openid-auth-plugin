@@ -5,6 +5,7 @@ import org.apache.commons.lang3.StringUtils;
 
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -35,9 +36,16 @@ class BearerProviderResolver {
             final String issuer = StringUtils.trimToNull(plugin.getProperty(providerId, "issuer"));
             final String jwksUri = StringUtils.trimToNull(plugin.getProperty(providerId, "jwksUri"));
             if (issuer == null || jwksUri == null) {
+                final String missing;
+                if (issuer == null && jwksUri == null) {
+                    missing = "openid." + providerId + ".issuer and openid." + providerId + ".jwksUri";
+                } else if (issuer == null) {
+                    missing = "openid." + providerId + ".issuer";
+                } else {
+                    missing = "openid." + providerId + ".jwksUri";
+                }
                 log.error("Provider '{}' has bearer.enabled=true but is missing {} — the bearer path is "
-                                + "disabled for it until configured.", providerId,
-                        issuer == null ? "openid." + providerId + ".issuer" : "openid." + providerId + ".jwksUri");
+                                + "disabled for it until configured.", providerId, missing);
                 continue;
             }
             final String previous = map.putIfAbsent(issuer, providerId);
@@ -59,6 +67,6 @@ class BearerProviderResolver {
 
     /** @return the providerIds eligible for the bearer path, in configuration order. */
     Set<String> providerIds() {
-        return Collections.unmodifiableSet(new java.util.LinkedHashSet<>(providerIdByIssuer.values()));
+        return Collections.unmodifiableSet(new LinkedHashSet<>(providerIdByIssuer.values()));
     }
 }
