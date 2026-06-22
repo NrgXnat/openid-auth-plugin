@@ -33,6 +33,9 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
 
+import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.ISSUER;
+import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.JWKS_URI;
+
 /**
  * Authenticates REST callers that present {@code Authorization: Bearer <jwt>}, where the JWT is an
  * access token minted by a configured OpenID provider. Unlike the interactive ID-token path, a
@@ -96,8 +99,8 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter {
     private static Map<String, BearerTokenValidator> buildValidators(final OpenIdAuthPlugin plugin) {
         final Map<String, BearerTokenValidator> validators = new LinkedHashMap<>();
         for (final String providerId : new BearerProviderResolver(plugin).providerIds()) {
-            final String issuer = plugin.getProperty(providerId, "issuer");
-            final String jwksUri = plugin.getProperty(providerId, "jwksUri");
+            final String issuer = plugin.getProperty(providerId, ISSUER);
+            final String jwksUri = plugin.getProperty(providerId, JWKS_URI);
             try {
                 validators.put(providerId, BearerTokenValidator.forRemoteJwks(issuer, (new URI(jwksUri)).toURL()));
             } catch (final MalformedURLException | URISyntaxException e) {

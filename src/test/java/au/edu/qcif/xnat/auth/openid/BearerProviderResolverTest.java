@@ -9,6 +9,8 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
 
+import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.ISSUER;
+import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.JWKS_URI;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.mockito.Mockito.lenient;
@@ -28,8 +30,8 @@ public class BearerProviderResolverTest {
     private void provider(final String id, final String bearerEnabled, final String issuer, final String jwksUri) {
         final Map<String, String> props = new HashMap<>();
         props.put("bearer.enabled", bearerEnabled);
-        props.put("issuer", issuer);
-        props.put("jwksUri", jwksUri);
+        props.put(ISSUER, issuer);
+        props.put(JWKS_URI, jwksUri);
         props.forEach((k, v) -> lenient().when(plugin.getProperty(id, k)).thenReturn(v));
     }
 

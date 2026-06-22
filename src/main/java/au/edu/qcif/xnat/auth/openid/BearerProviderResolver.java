@@ -10,6 +10,9 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
+import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.ISSUER;
+import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.JWKS_URI;
+
 /**
  * Routes an inbound bearer token to the configured provider whose issuer matches the token's
  * {@code iss} claim. The map is built once, at construction, from the providers that are eligible for
@@ -33,16 +36,16 @@ class BearerProviderResolver {
             if (!Boolean.parseBoolean(plugin.getProperty(providerId, "bearer.enabled"))) {
                 continue;
             }
-            final String issuer = StringUtils.trimToNull(plugin.getProperty(providerId, "issuer"));
-            final String jwksUri = StringUtils.trimToNull(plugin.getProperty(providerId, "jwksUri"));
+            final String issuer = StringUtils.trimToNull(plugin.getProperty(providerId, ISSUER));
+            final String jwksUri = StringUtils.trimToNull(plugin.getProperty(providerId, JWKS_URI));
             if (issuer == null || jwksUri == null) {
                 final String missing;
                 if (issuer == null && jwksUri == null) {
-                    missing = "openid." + providerId + ".issuer and openid." + providerId + ".jwksUri";
+                    missing = "openid." + providerId + "." + ISSUER + " and openid." + providerId + "." + JWKS_URI;
                 } else if (issuer == null) {
-                    missing = "openid." + providerId + ".issuer";
+                    missing = "openid." + providerId + "." + ISSUER;
                 } else {
-                    missing = "openid." + providerId + ".jwksUri";
+                    missing = "openid." + providerId + "." + JWKS_URI;
                 }
                 log.error("Provider '{}' has bearer.enabled=true but is missing {} — the bearer path is "
                                 + "disabled for it until configured.", providerId, missing);

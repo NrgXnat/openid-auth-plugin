@@ -1,5 +1,6 @@
 package au.edu.qcif.xnat.auth.openid;
 
+import au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant;
 import au.edu.qcif.xnat.auth.openid.gate.ClaimGateFactory;
 import au.edu.qcif.xnat.auth.openid.tokens.OpenIdAuthToken;
 import com.nimbusds.jose.JWSAlgorithm;
@@ -82,8 +83,8 @@ public class BearerTokenAuthenticationFilterTest {
         // Provider config that makes BearerProviderResolver route ISSUER -> PROVIDER.
         lenient().when(plugin.getEnabledProviders()).thenReturn(Collections.singletonList(PROVIDER));
         lenient().when(plugin.getProperty(PROVIDER, "bearer.enabled")).thenReturn("true");
-        lenient().when(plugin.getProperty(PROVIDER, "issuer")).thenReturn(ISSUER);
-        lenient().when(plugin.getProperty(PROVIDER, "jwksUri")).thenReturn("https://idp.example/jwks");
+        lenient().when(plugin.getProperty(PROVIDER, OpenIdAuthConstant.ISSUER)).thenReturn(ISSUER);
+        lenient().when(plugin.getProperty(PROVIDER, OpenIdAuthConstant.JWKS_URI)).thenReturn("https://idp.example/jwks");
 
         final Map<String, BearerTokenValidator> validators =
                 Collections.singletonMap(PROVIDER, new BearerTokenValidator(ISSUER, trustedSource));
