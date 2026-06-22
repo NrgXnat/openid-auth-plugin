@@ -1,4 +1,4 @@
-package au.edu.qcif.xnat.auth.openid;
+package au.edu.qcif.xnat.auth.openid.bearer;
 
 import com.nimbusds.jose.JOSEException;
 import com.nimbusds.jose.JWSAlgorithm;

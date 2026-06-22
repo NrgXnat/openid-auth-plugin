@@ -1,5 +1,6 @@
-package au.edu.qcif.xnat.auth.openid;
+package au.edu.qcif.xnat.auth.openid.bearer;
 
+import au.edu.qcif.xnat.auth.openid.OpenIdAuthPlugin;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 

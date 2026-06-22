@@ -1,5 +1,7 @@
-package au.edu.qcif.xnat.auth.openid;
+package au.edu.qcif.xnat.auth.openid.bearer;
 
+import au.edu.qcif.xnat.auth.openid.OpenIdAuthPlugin;
+import au.edu.qcif.xnat.auth.openid.OpenIdUserResolver;
 import au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant;
 import au.edu.qcif.xnat.auth.openid.gate.ClaimGateFactory;
 import au.edu.qcif.xnat.auth.openid.tokens.OpenIdAuthToken;

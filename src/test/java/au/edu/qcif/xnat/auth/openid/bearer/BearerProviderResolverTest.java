@@ -1,5 +1,6 @@
-package au.edu.qcif.xnat.auth.openid;
+package au.edu.qcif.xnat.auth.openid.bearer;
 
+import au.edu.qcif.xnat.auth.openid.OpenIdAuthPlugin;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;

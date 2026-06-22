@@ -1,6 +1,6 @@
 package au.edu.qcif.xnat.auth.openid.security;
 
-import au.edu.qcif.xnat.auth.openid.BearerTokenAuthenticationFilter;
+import au.edu.qcif.xnat.auth.openid.bearer.BearerTokenAuthenticationFilter;
 import au.edu.qcif.xnat.auth.openid.OpenIdAuthPlugin;
 import au.edu.qcif.xnat.auth.openid.OpenIdConnectFilter;
 import lombok.extern.slf4j.Slf4j;

@@ -1,5 +1,6 @@
-package au.edu.qcif.xnat.auth.openid;
+package au.edu.qcif.xnat.auth.openid.bearer;
 
+import au.edu.qcif.xnat.auth.openid.OpenIdAuthPlugin;
 import au.edu.qcif.xnat.auth.openid.gate.ClaimGateException;
 import au.edu.qcif.xnat.auth.openid.gate.ClaimGateFactory;
 import com.nimbusds.jwt.JWTClaimsSet;

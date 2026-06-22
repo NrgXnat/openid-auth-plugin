@@ -1,4 +1,4 @@
-package au.edu.qcif.xnat.auth.openid;
+package au.edu.qcif.xnat.auth.openid.bearer;
 
 /**
  * Thrown when a bearer token fails validity checking — a bad signature, wrong issuer, expired or

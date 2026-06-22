@@ -1,4 +1,4 @@
-package au.edu.qcif.xnat.auth.openid;
+package au.edu.qcif.xnat.auth.openid.bearer;
 
 import com.github.tomakehurst.wiremock.junit.WireMockRule;
 import com.nimbusds.jose.JWSAlgorithm;

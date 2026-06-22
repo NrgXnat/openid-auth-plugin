@@ -1,4 +1,4 @@
-package au.edu.qcif.xnat.auth.openid;
+package au.edu.qcif.xnat.auth.openid.bearer;
 
 import org.apache.commons.lang3.StringUtils;
 

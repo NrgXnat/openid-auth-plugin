@@ -23,12 +23,12 @@ import org.springframework.security.core.AuthenticationException;
  * account a prior interactive login created, rather than re-provisioning on every call).
  */
 @Slf4j
-class OpenIdUserResolver {
+public class OpenIdUserResolver {
 
     private final OpenIdAuthPlugin _plugin;
     private final XdatUserAuthService _userAuthService;
 
-    OpenIdUserResolver(final OpenIdAuthPlugin plugin, final XdatUserAuthService userAuthService) {
+    public OpenIdUserResolver(final OpenIdAuthPlugin plugin, final XdatUserAuthService userAuthService) {
         _plugin = plugin;
         _userAuthService = userAuthService;
     }
@@ -37,7 +37,7 @@ class OpenIdUserResolver {
      * @return the existing XNAT user for this OpenID mapping.
      * @throws UsernameAuthMappingNotFoundException if no mapping exists for {@code (username, OPENID, providerId)}.
      */
-    UserI resolveExisting(final String username, final String providerId) throws UsernameAuthMappingNotFoundException {
+    public UserI resolveExisting(final String username, final String providerId) throws UsernameAuthMappingNotFoundException {
         return _userAuthService.getUserDetailsByNameAndAuth(username, XdatUserAuthService.OPENID, providerId);
     }
 
@@ -45,7 +45,7 @@ class OpenIdUserResolver {
      * Creates a new XNAT account for the OpenID user, using the provider's standard auto-enabled /
      * auto-verified attributes, and registers the OpenID auth mapping.
      */
-    UserI createUser(final String providerId, final OpenIdConnectUserDetails user) throws AuthenticationException {
+    public UserI createUser(final String providerId, final OpenIdConnectUserDetails user) throws AuthenticationException {
         // Use standard XNAT provider attributes (auto.enabled/auto.verified) for consistency with other authentication providers
         boolean autoEnabled = _plugin.isAutoEnabled(providerId);
         boolean autoVerified = _plugin.isAutoVerified(providerId);
