@@ -119,7 +119,7 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter {
         }
 
         final Optional<String> maybeToken = _extractor.extract(request);
-        if (!maybeToken.isPresent()) {
+        if (maybeToken.isEmpty()) {
             chain.doFilter(request, response);
             return;
         }
@@ -136,7 +136,7 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter {
         }
 
         final Optional<String> maybeProvider = _providerResolver.resolve(issuer);
-        if (!maybeProvider.isPresent()) {
+        if (maybeProvider.isEmpty()) {
             log.info("Bearer token from unknown issuer '{}' rejected", issuer);
             unauthorized(response, "bearer token issuer is not configured");
             return;
