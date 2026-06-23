@@ -5,7 +5,7 @@
 
 buildscript {
     ext {
-        vXnat = "1.10.0"
+        vXnat = "1.10.1-SNAPSHOT"
     }
 }
 
@@ -75,11 +75,35 @@ dependencies {
     implementation "org.apache.commons:commons-lang3"
     implementation "commons-io:commons-io"
     implementation "org.slf4j:slf4j-api"
+    implementation("turbine:turbine") {
+        exclude group: "commons-dbcp"
+        exclude group: "commons-email"
+        exclude group: "commons-pool"
+        exclude group: "fulcrum"
+        exclude group: "javax.activation", module: "activation"
+        exclude group: "javax.mail"
+        exclude group: "javax.servlet"
+        exclude group: "jython"
+        exclude group: "xalan"
+        exclude group: "xml-apis"
+        exclude group: "log4j", module: "log4j"
+        exclude group: "berkeleydb"
+        exclude group: "javax.sql"
+        exclude group: "jndi"
+        exclude group: "mysql"
+        exclude group: "tomcat"
+        exclude group: "xerces"
+        exclude group: "velocity", module: "texen"
+        exclude group: "jamon", module: "jamon"
+    }
+    compileOnly("org.apache.velocity:velocity") { transitive = false }
+    compileOnly "javax.servlet:javax.servlet-api"
     implementAndInclude("com.nimbusds:nimbus-jose-jwt:9.37.3")
     testImplementation "junit:junit"
     testImplementation "org.springframework:spring-test"
     testImplementation "com.github.tomakehurst:wiremock"
     testImplementation "org.mockito:mockito-core"
+    testCompileOnly "javax.servlet:javax.servlet-api"
 }
 
 java {
@@ -94,7 +118,7 @@ compileJava {
 }
 
 jacoco {
-    toolVersion = dependencyManagement.importedProperties["jacoco.version"]
+    toolVersion = "0.8.12"
 }
 
 jacocoTestReport {
@@ -163,8 +187,8 @@ task xnatPluginJar(type: Jar) {
 }
 
 lombok {
-    version = dependencyManagement.importedProperties["lombok.version"] as String
-    sha256 = dependencyManagement.importedProperties["lombok.checksum"] as String
+    version = "1.18.34"
+    sha256 = "1ea5ad6c6afcff902d75072b2aaa6695585aebee9f12127e15c0036ba95d2918"
 }
 
 tasks.withType(Jar).configureEach {
