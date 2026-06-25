@@ -107,7 +107,11 @@ public class ClaimGateFactoryTest {
         final RoleGate gate = (RoleGate) factory().gatesFor(PROVIDER, AuthPath.BEARER).get(0);
 
         // A token carrying the role under the OVERRIDE path passes; under the shared path it would not.
-        gate.check(realmAccessClaims("realm_admin"));
+        try {
+            gate.check(realmAccessClaims("realm_admin"));
+        } catch (ClaimGateException e) {
+            fail("Token should have carried a valid role claim");
+        }
         try {
             gate.check(resourceAccessClaims("realm_admin"));
             fail("override path should not read the shared resource_access location");
@@ -124,7 +128,11 @@ public class ClaimGateFactoryTest {
 
         final RoleGate gate = (RoleGate) factory().gatesFor(PROVIDER, AuthPath.ID_TOKEN).get(0);
 
-        gate.check(resourceAccessClaims("xnat_access")); // throws if the shared path was not used
+        try {
+            gate.check(resourceAccessClaims("xnat_access")); // throws if the shared path was not used
+        } catch (ClaimGateException e) {
+            fail("shared path was not used");
+        }
     }
 
     private static JWTClaimsSet resourceAccessClaims(final String... roles) {

@@ -9,7 +9,7 @@ package au.edu.qcif.xnat.auth.openid.gate;
  * own outcome — the bearer path to 403 Forbidden, the interactive ID-token path to its existing
  * login-redirect failure handling.</p>
  */
-public class ClaimGateException extends RuntimeException {
+public class ClaimGateException extends Exception {
 
     public ClaimGateException(final String message) {
         super(message);

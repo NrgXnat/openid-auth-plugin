@@ -25,7 +25,12 @@ public class AudienceGateTest {
     }
 
     private static void assertPasses(final AudienceGate gate, final JWTClaimsSet claims) {
-        gate.check(claims); // throws on failure; reaching here is the pass assertion
+        try {
+            gate.check(claims);
+        } catch (ClaimGateException e) {
+            fail("claims did not pass");
+        }
+        // throws on failure; reaching here is the pass assertion
     }
 
     private static void assertRejects(final AudienceGate gate, final JWTClaimsSet claims) {
