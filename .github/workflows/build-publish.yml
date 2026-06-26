@@ -19,6 +19,7 @@ on:
 
 permissions:
   contents: read
+  packages: write   # required by reusable workflow's publish-ghcr job (gated by if: inputs.publish-ghcr but parsed at startup)
 
 jobs:
   build-publish:
