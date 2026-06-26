@@ -208,7 +208,7 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter {
      * {@link ClaimGateException}, which the filter maps to 403. With no bearer gates enabled this is
      * a no-op. Package-private so it can be unit-tested directly.
      */
-    void applyBearerClaimGates(final String providerId, final JWTClaimsSet claims) {
+    void applyBearerClaimGates(final String providerId, final JWTClaimsSet claims) throws ClaimGateException {
         for (final ClaimGate gate : _gateFactory.gatesFor(providerId, AuthPath.BEARER)) {
             gate.check(claims);
         }
