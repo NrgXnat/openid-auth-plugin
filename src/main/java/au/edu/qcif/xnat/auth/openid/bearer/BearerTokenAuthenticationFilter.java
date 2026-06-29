@@ -7,7 +7,6 @@ import au.edu.qcif.xnat.auth.openid.gate.AuthPath;
 import au.edu.qcif.xnat.auth.openid.gate.ClaimGate;
 import au.edu.qcif.xnat.auth.openid.gate.ClaimGateException;
 import au.edu.qcif.xnat.auth.openid.gate.ClaimGateFactory;
-import au.edu.qcif.xnat.auth.openid.tokens.OpenIdAuthToken;
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
 import java.net.URI;
@@ -59,11 +58,36 @@ import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.JWKS_URI;
  *   <li>On success, set the {@link SecurityContextHolder} authentication and continue the chain.</li>
  * </ol>
  *
- * <p><b>Stateless by design.</b> The filter never calls {@code request.getSession()} or a session
- * authentication strategy, so no {@code JSESSIONID} is created for a bearer request (XNAT runs
- * {@code SessionCreationPolicy.IF_REQUIRED}). It deliberately does <em>not</em> populate the
- * session-scoped {@code UserHelper} — doing so would force a session — so authorization relies on
- * the Spring {@code SecurityContext} principal alone.</p>
+ * <p><b>Stateless by design.</b> XNAT runs {@code SessionCreationPolicy.IF_REQUIRED} with the
+ * default {@code HttpSessionSecurityContextRepository}, so simply placing a non-anonymous
+ * {@code Authentication} in the {@code SecurityContext} would normally cause Spring Security's
+ * {@code SecurityContextPersistenceFilter} to create a {@code JSESSIONID} at the end of the request.
+ * To stay stateless the filter authenticates with a {@link BearerAuthToken}, which is annotated
+ * {@link org.springframework.security.core.Transient @Transient}; the repository's {@code saveContext}
+ * skips persisting a transient authentication, so it creates no session. The filter also deliberately
+ * does <em>not</em> populate the session-scoped {@code UserHelper} — doing so would force a session —
+ * so authorization relies on the Spring {@code SecurityContext} principal alone.</p>
+ *
+ * <p>The {@code @Transient} token only governs {@code SecurityContextPersistenceFilter}, though.
+ * Other downstream filters create sessions of their own accord — notably XNAT's
+ * {@code XnatExpiredPasswordFilter}, which calls {@code request.getSession()} unconditionally on every
+ * request and so makes the container mint a {@code JSESSIONID}. To close that path the successful
+ * branch continues the chain behind a {@link StatelessSessionRequestWrapper}, which serves a
+ * per-request {@link EphemeralHttpSession} for {@code getSession(true)} but never registers a session
+ * with the container, so no cookie is written.</p>
+ *
+ * <p><b>Why stateless, and what it means for authorization.</b> A bearer access token is a
+ * self-contained, per-request credential; the caller re-presents it on every request, so a
+ * server-side session adds nothing but cost and surprise (a stray {@code JSESSIONID} the client never
+ * asked for, plus the memory and fixation surface of a session per API call). Statelessness is safe
+ * because XNAT's authorization does not depend on the session: across the Restlet ({@code /data}),
+ * XAPI ({@code /xapi}), and Turbine layers, the acting user is resolved per-request from the
+ * {@code SecurityContextHolder} (via {@code XDAT.getUserDetails()}) and permissions are evaluated from
+ * a username-keyed, application-scoped cache — never read out of the {@code HttpSession}. A bearer
+ * request therefore authorizes identically to a session-backed login, for reads and writes alike. The
+ * one session-coupled behavior in XNAT is the CSRF token check on legacy {@code /app} Turbine actions,
+ * which is orthogonal to the authorization decision and is bypassed for non-browser user agents, so it
+ * does not affect bearer/API callers.</p>
  */
 @Slf4j
 @Component
@@ -197,10 +221,13 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter {
             return;
         }
 
-        final Authentication authentication = new OpenIdAuthToken(xdatUser, providerId);
+        final Authentication authentication = new BearerAuthToken(xdatUser, providerId);
         SecurityContextHolder.getContext().setAuthentication(authentication);
         log.debug("Bearer token authenticated user '{}' for provider '{}'", xdatUser.getUsername(), providerId);
-        chain.doFilter(request, response);
+        // Run the rest of the chain behind a wrapper that refuses to create a container session, so
+        // downstream filters that call request.getSession() (e.g. XNAT's XnatExpiredPasswordFilter)
+        // cannot make the container mint a JSESSIONID for this stateless, token-authenticated request.
+        chain.doFilter(new StatelessSessionRequestWrapper(request), response);
     }
 
     /**

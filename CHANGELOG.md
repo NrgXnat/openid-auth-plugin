@@ -14,7 +14,8 @@ Adds OpenID Connect (OIDC) authentication support to XNAT.
 * Added an opt-in **bearer-token authentication** path: REST requests presenting `Authorization: Bearer <jwt>` (an access token minted by the provider) are authenticated directly.
     * The token is fully validated — RSA signature against the provider's JWKS, plus `iss` and `exp` — since it arrives from an untrusted client. Configure `openid.<providerId>.bearer.enabled`, `openid.<providerId>.issuer`, and `openid.<providerId>.jwksUri`.
     * Invalid/expired/wrong-issuer tokens return **401**; a valid token that fails a `bearer.*` claim gate, maps to no XNAT account (with auto-create off), or hits a disabled/locked account returns **403**.
-    * The path is stateless (no session is created) and short-circuits when the request is already authenticated. Auto-create honors `openid.<providerId>.bearer.forceUserCreate`, falling back to `openid.<providerId>.forceUserCreate`.
+    * The path is stateless and short-circuits when the request is already authenticated. Auto-create honors `openid.<providerId>.bearer.forceUserCreate`, falling back to `openid.<providerId>.forceUserCreate`.
+    * Statelessness is enforced on two fronts: the authentication token is `@Transient` so Spring's `SecurityContextPersistenceFilter` does not persist it, and the successful request is continued behind a wrapper that prevents downstream filters (e.g. XNAT's `XnatExpiredPasswordFilter`, which calls `request.getSession()` unconditionally) from making the container create a session — so no `JSESSIONID` cookie is emitted.
 
 ## <a name="1.5.0"></a>OpenID Authentication Plugin Version 1.5.x Release Notes
 **BREAKING CHANGE:** 1.5.0 is compiled in Java21 and has dependency updates that require XNAT 1.10.0. 

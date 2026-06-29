@@ -32,7 +32,10 @@ import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 
+import javax.servlet.ServletRequest;
+import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
+import javax.servlet.http.HttpSession;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Date;
@@ -183,6 +186,35 @@ public class BearerTokenAuthenticationFilterTest {
         assertTrue(auth instanceof OpenIdAuthToken);
         assertEquals(PROVIDER, ((OpenIdAuthToken) auth).getProviderId());
         assertNull("the bearer path must not create a session", request.getSession(false));
+    }
+
+    @Test
+    public void successfulBearerAuthShieldsDownstreamFromCreatingAContainerSession() throws Exception {
+        final UserI user = enabledUser();
+        when(userResolver.resolveExisting(USERNAME, PROVIDER)).thenReturn(user);
+        bearer(sign(signingKey, validClaims().build()));
+
+        doFilter();
+
+        // The request handed to the downstream chain must shield the container from session creation.
+        final ServletRequest downstream = chain.getRequest();
+        assertNotNull("chain should be invoked", downstream);
+        assertTrue(downstream instanceof HttpServletRequest);
+        final HttpServletRequest httpDownstream = (HttpServletRequest) downstream;
+
+        // getSession(false) reports no session, so Spring's SessionManagementFilter stays a no-op...
+        assertNull("getSession(false) must report no pre-existing session", httpDownstream.getSession(false));
+
+        // ...but a forced getSession() (as XnatExpiredPasswordFilter does) returns a usable session
+        // that callers can dereference without NPE.
+        final HttpSession session = httpDownstream.getSession();
+        assertNotNull("getSession() must not return null — downstream filters dereference it", session);
+        assertNotNull(session.getId());
+        session.getMaxInactiveInterval(); // must not throw (the field XnatExpiredPasswordFilter reads)
+
+        // Crucially, none of that created a real container session on the underlying request, so the
+        // container never emits a JSESSIONID cookie.
+        assertNull("the underlying container request must never get a session", request.getSession(false));
     }
 
     // ---- 401: token validity -------------------------------------------------------------------
