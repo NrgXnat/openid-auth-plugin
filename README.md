@@ -111,10 +111,14 @@ requirement. Both are **opt-in and default off**, and run independently on two p
 interactive **ID-token** path (`idToken`) and the **bearer-token** path (`bearer`). A rejected user
 is denied — they are not routed to the admin auto-enroll queue.
 
-Configuration has two layers: **what** to check (defined once per provider) and **whether** to
-check it, per path. Any "what" field may be overridden per path (e.g.
-`openid.providerId.bearer.roleCheck.rolePath`); the path-scoped value wins, otherwise the shared
-per-provider value is used.
+Configuration has two layers: **what** to check and **whether** to check it. Every property in
+both layers resolves the same way: a shared per-provider value (e.g.
+`openid.providerId.roleCheck.rolePath`, `openid.providerId.audCheck.enabled`) applies to all paths,
+and a path-scoped value (e.g. `openid.providerId.bearer.roleCheck.rolePath`,
+`openid.providerId.idToken.audCheck.enabled`) overrides it for that path. The path-scoped value
+wins when set, otherwise the shared value is used. Because a path-scoped value always wins, a
+path-scoped `enabled=false` overrides a shared `enabled=true`, letting one path opt out of a gate
+enabled for the provider as a whole.
 
 #### openid.`providerId`.audCheck.acceptedAudiences
 
@@ -132,13 +136,20 @@ reads the structured, possibly nested claim at this path.
 Comma-delimited list of roles. The role gate passes if the token's roles contain at least one of
 these (any-of).
 
+#### openid.`providerId`.audCheck.enabled / openid.`providerId`.roleCheck.enabled
+
+Enable the audience / role gate on all paths. Default `false`. A path-scoped toggle (below)
+overrides this for an individual path.
+
 #### openid.`providerId`.idToken.audCheck.enabled / openid.`providerId`.idToken.roleCheck.enabled
 
-Enable the audience / role gate on the interactive ID-token path. Default `false`.
+Enable (or, with `false`, disable) the audience / role gate on the interactive ID-token path,
+overriding the shared toggle above for this path. Defaults to the shared toggle, otherwise `false`.
 
 #### openid.`providerId`.bearer.audCheck.enabled / openid.`providerId`.bearer.roleCheck.enabled
 
-Enable the audience / role gate on the bearer-token path. Default `false`.
+Enable (or, with `false`, disable) the audience / role gate on the bearer-token path, overriding the
+shared toggle above for this path. Defaults to the shared toggle, otherwise `false`.
 
 ### auto.enabled
 

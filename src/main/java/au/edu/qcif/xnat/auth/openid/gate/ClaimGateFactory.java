@@ -16,17 +16,18 @@ import java.util.stream.Collectors;
  *
  * <p>Configuration has two layers:</p>
  * <ol>
- *   <li><strong>What to check</strong> — defined once per provider, e.g.
- *       {@code openid.{p}.audCheck.acceptedAudiences}, {@code openid.{p}.roleCheck.rolePath},
- *       {@code openid.{p}.roleCheck.requiredRoles}.</li>
- *   <li><strong>Whether to check, per path</strong> — booleans defaulting to {@code false}, e.g.
- *       {@code openid.{p}.idToken.roleCheck.enabled}, {@code openid.{p}.bearer.audCheck.enabled}.</li>
+ *   <li><strong>What to check</strong> — e.g. {@code openid.{p}.audCheck.acceptedAudiences},
+ *       {@code openid.{p}.roleCheck.rolePath}, {@code openid.{p}.roleCheck.requiredRoles}.</li>
+ *   <li><strong>Whether to check</strong> — booleans defaulting to {@code false}, e.g.
+ *       {@code openid.{p}.audCheck.enabled}, {@code openid.{p}.roleCheck.enabled}.</li>
  * </ol>
  *
- * <p>Any "what to check" field may be overridden per path: a path-scoped value such as
- * {@code openid.{p}.bearer.roleCheck.rolePath} wins over the shared
- * {@code openid.{p}.roleCheck.rolePath}, for when the access token's claim shape diverges from the
- * ID token's. An all-off configuration yields an empty list (a no-op).</p>
+ * <p>Every field — both layers — resolves the same way (see {@link GateConfig}): a path-scoped
+ * value such as {@code openid.{p}.bearer.roleCheck.rolePath} or {@code openid.{p}.idToken.audCheck.enabled}
+ * wins over the shared {@code openid.{p}.roleCheck.rolePath} / {@code openid.{p}.audCheck.enabled},
+ * for when a path needs to diverge from the shared definition. A path-scoped {@code enabled=false}
+ * therefore overrides a shared {@code enabled=true}. An all-off configuration yields an empty list
+ * (a no-op).</p>
  */
 public class ClaimGateFactory {
 

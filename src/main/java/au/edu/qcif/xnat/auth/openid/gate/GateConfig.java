@@ -8,12 +8,12 @@ import org.apache.commons.lang3.StringUtils;
  * resolution rules so callers never hand-build property names or pick the wrong fallback behaviour.
  *
  * <p>Both accessors follow the {@code openid.{providerId}.{prop}} convention via
- * {@link OpenIdAuthPlugin#getProperty(String, String)}:</p>
+ * {@link OpenIdAuthPlugin#getProperty(String, String)}, and both resolve the same way: prefer the
+ * path-scoped key, falling back to the shared per-provider key.</p>
  * <ul>
- *   <li>{@link #value(String)} — a "what to check" field (e.g. {@code roleCheck.rolePath}); prefers
- *       the path-scoped key, falling back to the shared per-provider key.</li>
+ *   <li>{@link #value(String)} — a "what to check" field (e.g. {@code roleCheck.rolePath}).</li>
  *   <li>{@link #enabled(String)} — a "whether to check" boolean toggle (e.g. {@code audCheck}),
- *       read per path only and defaulting to {@code false}.</li>
+ *       defaulting to {@code false}.</li>
  * </ul>
  */
 final class GateConfig {
@@ -33,15 +33,23 @@ final class GateConfig {
      * ({@code openid.{p}.{path}.{field}}) over the shared one ({@code openid.{p}.{field}}).
      */
     String value(final String field) {
-        final String perPath = plugin.getProperty(providerId, path.prefix() + "." + field);
-        return StringUtils.isNotBlank(perPath) ? perPath : plugin.getProperty(providerId, field);
+        return resolve(field);
     }
 
     /**
-     * True if {@code openid.{p}.{path}.{gate}.enabled} is set to {@code true}. Read per path only,
-     * defaulting to {@code false} when unset.
+     * True if the {@code {gate}.enabled} toggle resolves to {@code true}, preferring the path-scoped
+     * key ({@code openid.{p}.{path}.{gate}.enabled}) over the shared one
+     * ({@code openid.{p}.{gate}.enabled}). Defaults to {@code false} when neither is set, so a
+     * path-scoped {@code false} also overrides a shared {@code true}.
      */
     boolean enabled(final String gate) {
-        return Boolean.parseBoolean(plugin.getProperty(providerId, path.prefix() + "." + gate + ".enabled"));
+        return Boolean.parseBoolean(resolve(gate + ".enabled"));
+    }
+
+    /** Path-scoped value ({@code openid.{p}.{path}.{field}}), falling back to the shared
+     * per-provider value ({@code openid.{p}.{field}}). */
+    private String resolve(final String field) {
+        final String perPath = plugin.getProperty(providerId, path.prefix() + "." + field);
+        return StringUtils.isNotBlank(perPath) ? perPath : plugin.getProperty(providerId, field);
     }
 }

@@ -20,8 +20,8 @@ import static org.mockito.Mockito.lenient;
 
 /**
  * Unit tests for {@link ClaimGateFactory}: per-(provider, path) gate assembly from configuration,
- * including the per-path override falling back to the shared per-provider definition, and the
- * default-off behaviour of the enable toggles.
+ * including the per-path override falling back to the shared per-provider definition (for both the
+ * "what to check" fields and the enable toggles), and the default-off behaviour of the toggles.
  */
 @RunWith(MockitoJUnitRunner.class)
 public class ClaimGateFactoryTest {
@@ -90,6 +90,27 @@ public class ClaimGateFactoryTest {
         // Enabled on bearer only; the ID-token path must see no gate.
         props.put("audCheck.acceptedAudiences", "xnat");
         props.put("bearer.audCheck.enabled", "true");
+
+        assertTrue(factory().gatesFor(PROVIDER, AuthPath.ID_TOKEN).isEmpty());
+        assertEquals(1, factory().gatesFor(PROVIDER, AuthPath.BEARER).size());
+    }
+
+    @Test
+    public void sharedEnableToggleAppliesToAllPaths() {
+        // A shared (non-path-scoped) toggle enables the gate on every path.
+        props.put("audCheck.acceptedAudiences", "xnat");
+        props.put("audCheck.enabled", "true");
+
+        assertEquals(1, factory().gatesFor(PROVIDER, AuthPath.ID_TOKEN).size());
+        assertEquals(1, factory().gatesFor(PROVIDER, AuthPath.BEARER).size());
+    }
+
+    @Test
+    public void pathScopedEnableOverridesSharedToggle() {
+        // Shared toggle on, but the ID-token path opts out explicitly; bearer still inherits the shared on.
+        props.put("audCheck.acceptedAudiences", "xnat");
+        props.put("audCheck.enabled", "true");
+        props.put("idToken.audCheck.enabled", "false");
 
         assertTrue(factory().gatesFor(PROVIDER, AuthPath.ID_TOKEN).isEmpty());
         assertEquals(1, factory().gatesFor(PROVIDER, AuthPath.BEARER).size());
