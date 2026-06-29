@@ -41,26 +41,16 @@ public class ClaimGateFactory {
      * (audience then role); empty if none are enabled.
      */
     public List<ClaimGate> gatesFor(final String providerId, final AuthPath path) {
+        final GateConfig config = new GateConfig(plugin, providerId, path);
         final List<ClaimGate> gates = new ArrayList<>();
-        if (isEnabled(providerId, path, "audCheck")) {
-            gates.add(new AudienceGate(commaSet(resolve(providerId, path, "audCheck.acceptedAudiences"))));
+        if (config.enabled("audCheck")) {
+            gates.add(new AudienceGate(commaSet(config.value("audCheck.acceptedAudiences"))));
         }
-        if (isEnabled(providerId, path, "roleCheck")) {
-            final String rolePath = StringUtils.trimToEmpty(resolve(providerId, path, "roleCheck.rolePath"));
-            gates.add(new RoleGate(rolePath.split("\\."), commaSet(resolve(providerId, path, "roleCheck.requiredRoles"))));
+        if (config.enabled("roleCheck")) {
+            final String rolePath = StringUtils.trimToEmpty(config.value("roleCheck.rolePath"));
+            gates.add(new RoleGate(rolePath.split("\\."), commaSet(config.value("roleCheck.requiredRoles"))));
         }
         return gates;
-    }
-
-    /** True if {@code openid.{p}.{path}.{gate}.enabled} is set to {@code true}. */
-    private boolean isEnabled(final String providerId, final AuthPath path, final String gate) {
-        return Boolean.parseBoolean(plugin.getProperty(providerId, path.prefix() + "." + gate + ".enabled"));
-    }
-
-    /** Resolves a "what to check" field, preferring the path-scoped value over the shared one. */
-    private String resolve(final String providerId, final AuthPath path, final String field) {
-        final String perPath = plugin.getProperty(providerId, path.prefix() + "." + field);
-        return StringUtils.isNotBlank(perPath) ? perPath : plugin.getProperty(providerId, field);
     }
 
     private static Set<String> commaSet(final String value) {
