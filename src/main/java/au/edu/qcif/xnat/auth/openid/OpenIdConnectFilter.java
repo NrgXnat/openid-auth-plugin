@@ -17,6 +17,10 @@
  */
 package au.edu.qcif.xnat.auth.openid;
 
+import au.edu.qcif.xnat.auth.openid.gate.AuthPath;
+import au.edu.qcif.xnat.auth.openid.gate.ClaimGate;
+import au.edu.qcif.xnat.auth.openid.gate.ClaimGateException;
+import au.edu.qcif.xnat.auth.openid.gate.ClaimGateFactory;
 import au.edu.qcif.xnat.auth.openid.service.KeystoreService;
 import au.edu.qcif.xnat.auth.openid.tokens.OpenIdAuthRequestToken;
 import au.edu.qcif.xnat.auth.openid.tokens.OpenIdAuthToken;
@@ -106,6 +110,7 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
     private final SiteConfigPreferences _siteConfigPreferences;
     private final Map<String, List<String>> _allowedDomains;
     private final KeystoreService _keystoreService;
+    private final ClaimGateFactory _gateFactory;
 
     private OAuth2RestTemplate _restTemplate;
 
@@ -124,6 +129,7 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         _userAuthService = userAuthService;
         _siteConfigPreferences = siteConfigPreferences;
         _keystoreService = keystoreService;
+        _gateFactory = new ClaimGateFactory(plugin);
 
         _allowedDomains = _plugin.getEnabledProviders().stream().collect(Collectors.toMap(Function.identity(), this::getAllowedEmailDomains));
     }
@@ -195,6 +201,8 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
             log.error("Provider id {} not configured", providerId, e);
             throw new BadCredentialsException("Provider not configured", e);
         }
+
+        applyIdTokenClaimGates(providerId, claimsSet);
 
         final Map<String, String> authInfo = claimsSet.getClaims().entrySet().stream()
                 .collect(Collectors.toMap(
@@ -372,6 +380,24 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         }
 
         return xdatUser;
+    }
+
+    /**
+     * Runs the claim-validation gates enabled for the interactive ID-token path against the parsed
+     * token claims. A gate failure means the credential is valid but the caller is not authorized;
+     * on this path the status code is invisible (the outcome is a login redirect), so it is mapped
+     * to {@link BadCredentialsException}, reusing the existing validation-failure handling. With no
+     * gates enabled this is a no-op.
+     */
+    void applyIdTokenClaimGates(final String providerId, final JWTClaimsSet claims) {
+        try {
+            for (final ClaimGate gate : _gateFactory.gatesFor(providerId, AuthPath.ID_TOKEN)) {
+                gate.check(claims);
+            }
+        } catch (final ClaimGateException e) {
+            log.info("OpenID claim gate rejected user for provider '{}': {}", providerId, e.getMessage());
+            throw new BadCredentialsException(e.getMessage(), e);
+        }
     }
 
     private boolean shouldFilterEmailDomains(final String providerId) {

@@ -104,6 +104,53 @@ Comma delimted whitelist of domains.
 
 Allows skipping of user creation, usually set to true.
 
+### Claim-validation gates (audience and role)
+
+Two optional gates can reject a valid token whose claims do not meet an authorization
+requirement. Both are **opt-in and default off**, and run independently on two paths: the
+interactive **ID-token** path (`idToken`) and the **bearer-token** path (`bearer`). A rejected user
+is denied — they are not routed to the admin auto-enroll queue.
+
+Configuration has two layers: **what** to check and **whether** to check it. Every property in
+both layers resolves the same way: a shared per-provider value (e.g.
+`openid.providerId.roleCheck.rolePath`, `openid.providerId.audCheck.enabled`) applies to all paths,
+and a path-scoped value (e.g. `openid.providerId.bearer.roleCheck.rolePath`,
+`openid.providerId.idToken.audCheck.enabled`) overrides it for that path. The path-scoped value
+wins when set, otherwise the shared value is used. Because a path-scoped value always wins, a
+path-scoped `enabled=false` overrides a shared `enabled=true`, letting one path opt out of a gate
+enabled for the provider as a whole.
+
+#### openid.`providerId`.audCheck.acceptedAudiences
+
+Comma-delimited list of accepted audiences. The audience gate passes if the token's `aud` claim
+contains at least one of these (a membership test). Recommended posture is a single audience; listing
+more than one widens the trust boundary.
+
+#### openid.`providerId`.roleCheck.rolePath
+
+Dot-delimited path to the roles claim, e.g. `resource_access.xnat.roles` (Keycloak). The role gate
+reads the structured, possibly nested claim at this path.
+
+#### openid.`providerId`.roleCheck.requiredRoles
+
+Comma-delimited list of roles. The role gate passes if the token's roles contain at least one of
+these (any-of).
+
+#### openid.`providerId`.audCheck.enabled / openid.`providerId`.roleCheck.enabled
+
+Enable the audience / role gate on all paths. Default `false`. A path-scoped toggle (below)
+overrides this for an individual path.
+
+#### openid.`providerId`.idToken.audCheck.enabled / openid.`providerId`.idToken.roleCheck.enabled
+
+Enable (or, with `false`, disable) the audience / role gate on the interactive ID-token path,
+overriding the shared toggle above for this path. Defaults to the shared toggle, otherwise `false`.
+
+#### openid.`providerId`.bearer.audCheck.enabled / openid.`providerId`.bearer.roleCheck.enabled
+
+Enable (or, with `false`, disable) the audience / role gate on the bearer-token path, overriding the
+shared toggle above for this path. Defaults to the shared toggle, otherwise `false`.
+
 ### auto.enabled
 
 Standard XNAT provider attribute that sets the `enabled` property of new users. Set to `false` to require admins to manually enable users before allowing logins, set to `true` to allow immediate access.
@@ -122,11 +169,11 @@ The property names used to populate user information during user creation. These
 
 ### openid.`providerId`.pkceEnabled
 
-Flag to enable the PKCE feature in the authrozation code grant flow
+Flag to enable the PKCE feature in the authorization code grant flow
 
 ### openid.`providerId`.usernamePattern
 
-Default pattern to define auth_user field of the xhbm_xdat_user_auth table
+Default pattern to define `auth_user` field of the `xhbm_xdat_user_auth` table
 
 ### openid.`providerId`.idTokenEncryptionAlgorithm
 
