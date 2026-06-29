@@ -103,6 +103,8 @@ dependencies {
     testImplementation "com.github.tomakehurst:wiremock"
     testImplementation "org.mockito:mockito-core"
     testCompileOnly "javax.servlet:javax.servlet-api"
+    // Mockito ByteBuddy needs servlet-api at test runtime to introspect XnatAppInfo / xdat classes (see CHECKLIST §5.3)
+    testRuntimeOnly "javax.servlet:javax.servlet-api"
 }
 
 java {
