@@ -14,7 +14,6 @@ import org.springframework.security.core.AuthenticationException;
 
 import java.lang.reflect.Method;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.Map;
 
 import static org.junit.Assert.*;
@@ -22,8 +21,10 @@ import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.when;
 
 /**
- * Unit tests for the pure decision logic in {@link OpenIdConnectFilter}: email-domain whitelisting,
- * the login-page error-message mapping, and ID-token encryption detection.
+ * Unit tests for the pure decision logic in {@link OpenIdConnectFilter}: the login-page
+ * error-message mapping and ID-token encryption detection. (Email-domain whitelisting and the
+ * email-verification requirement now live in {@link OpenIdAccountPolicy} and are tested in
+ * {@code OpenIdAccountPolicyTest}.)
  *
  * <p>These paths need no OAuth2 exchange, database, or servlet container. The filter is constructed
  * directly with mocked collaborators (only {@link OpenIdAuthPlugin} drives these branches), and the
@@ -54,25 +55,6 @@ public class OpenIdConnectFilterLogicTest {
         return new OpenIdConnectFilter(plugin, eventPublisher, userAuthService, siteConfigPreferences, keystoreService);
     }
 
-    private static Map<String, String> filteringOn(final String allowedEmailDomains) {
-        final Map<String, String> props = new HashMap<>();
-        props.put("shouldFilterEmailDomains", "true");
-        props.put("allowedEmailDomains", allowedEmailDomains);
-        return props;
-    }
-
-    private static boolean isAllowedEmailDomain(final OpenIdConnectFilter filter, final String email, final String providerId) throws Exception {
-        final Method method = OpenIdConnectFilter.class.getDeclaredMethod("isAllowedEmailDomain", String.class, String.class);
-        method.setAccessible(true);
-        return (boolean) method.invoke(filter, email, providerId);
-    }
-
-    private static boolean shouldFilterEmailDomains(final OpenIdConnectFilter filter, final String providerId) throws Exception {
-        final Method method = OpenIdConnectFilter.class.getDeclaredMethod("shouldFilterEmailDomains", String.class);
-        method.setAccessible(true);
-        return (boolean) method.invoke(filter, providerId);
-    }
-
     private static boolean isIdTokenEncrypted(final OpenIdConnectFilter filter, final String idToken) throws Exception {
         final Method method = OpenIdConnectFilter.class.getDeclaredMethod("isIdTokenEncrypted", String.class);
         method.setAccessible(true);
@@ -83,73 +65,6 @@ public class OpenIdConnectFilterLogicTest {
         final Method method = OpenIdConnectFilter.class.getDeclaredMethod("getUserMessage", AuthenticationException.class);
         method.setAccessible(true);
         return (String) method.invoke(null, failed);
-    }
-
-    // ---- email-domain whitelisting -------------------------------------------------------------
-
-    @Test
-    public void anyDomainAllowedWhenFilteringDisabled() throws Exception {
-        final OpenIdConnectFilter filter = filterWith(Collections.singletonMap("shouldFilterEmailDomains", "false"));
-
-        assertTrue(isAllowedEmailDomain(filter, "anyone@whatever.example", PROVIDER));
-    }
-
-    @Test
-    public void domainOnWhitelistIsAllowed() throws Exception {
-        final OpenIdConnectFilter filter = filterWith(filteringOn("example.org, wustl.edu"));
-
-        assertTrue(isAllowedEmailDomain(filter, "jane@wustl.edu", PROVIDER));
-    }
-
-    @Test
-    public void domainNotOnWhitelistIsRejected() throws Exception {
-        final OpenIdConnectFilter filter = filterWith(filteringOn("example.org, wustl.edu"));
-
-        assertFalse(isAllowedEmailDomain(filter, "jane@gmail.com", PROVIDER));
-    }
-
-    @Test
-    public void whitelistMatchIsCaseInsensitive() throws Exception {
-        final OpenIdConnectFilter filter = filterWith(filteringOn("wustl.edu"));
-
-        assertTrue(isAllowedEmailDomain(filter, "Jane@WUSTL.EDU", PROVIDER));
-    }
-
-    @Test
-    public void wildcardWhitelistAllowsAnyDomain() throws Exception {
-        final OpenIdConnectFilter filter = filterWith(filteringOn("*"));
-
-        assertTrue(isAllowedEmailDomain(filter, "jane@anything.example", PROVIDER));
-    }
-
-    @Test
-    public void malformedEmailWithoutDomainIsRejected() throws Exception {
-        final OpenIdConnectFilter filter = filterWith(filteringOn("wustl.edu"));
-
-        assertFalse("an address with no @ has no parseable domain", isAllowedEmailDomain(filter, "not-an-email", PROVIDER));
-    }
-
-    @Test
-    public void unknownProviderIsRejected() throws Exception {
-        // Only PROVIDER is enabled; a different provider id is absent from the allowed-domains map.
-        final OpenIdConnectFilter filter = filterWith(filteringOn("wustl.edu"));
-
-        assertFalse(isAllowedEmailDomain(filter, "jane@wustl.edu", "some-other-provider"));
-    }
-
-    @Test
-    public void shouldFilterEmailDomainsDefaultsToFalseWhenUnset() throws Exception {
-        // Property not stubbed -> null -> defaults to "false".
-        final OpenIdConnectFilter filter = filterWith(Collections.emptyMap());
-
-        assertFalse(shouldFilterEmailDomains(filter, PROVIDER));
-    }
-
-    @Test
-    public void shouldFilterEmailDomainsReflectsConfiguredValue() throws Exception {
-        final OpenIdConnectFilter filter = filterWith(filteringOn("wustl.edu"));
-
-        assertTrue(shouldFilterEmailDomains(filter, PROVIDER));
     }
 
     // ---- login-page error messages -------------------------------------------------------------

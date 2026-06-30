@@ -30,7 +30,6 @@ import com.nimbusds.jwt.EncryptedJWT;
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
 import lombok.extern.slf4j.Slf4j;
-import org.apache.commons.collections.ListUtils;
 import org.apache.commons.collections.MapUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.nrg.framework.generics.GenericUtils;
@@ -72,11 +71,8 @@ import java.io.IOException;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.text.ParseException;
-import java.util.Arrays;
 import java.util.Collections;
-import java.util.List;
 import java.util.Map;
-import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
@@ -89,7 +85,6 @@ import java.util.stream.Collectors;
 @Slf4j
 @Component
 public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter {
-    private static final List<String> ALL_DOMAINS = Collections.singletonList("*");
 
     /**
      * Session attribute key for storing OpenID error messages to display on the login page.
@@ -98,11 +93,10 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
 
     private final OpenIdAuthPlugin _plugin;
     private final AuthenticationEventPublisher _eventPublisher;
-    private final SiteConfigPreferences _siteConfigPreferences;
-    private final Map<String, List<String>> _allowedDomains;
     private final KeystoreService _keystoreService;
     private final ClaimGateFactory _gateFactory;
     private final OpenIdUserResolver _userResolver;
+    private final OpenIdAccountPolicy _accountPolicy;
 
     private OAuth2RestTemplate _restTemplate;
 
@@ -118,12 +112,10 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         setAuthenticationManager(new NoopAuthenticationManager());
         _plugin = plugin;
         _eventPublisher = eventPublisher;
-        _siteConfigPreferences = siteConfigPreferences;
         _keystoreService = keystoreService;
         _gateFactory = new ClaimGateFactory(plugin);
         _userResolver = new OpenIdUserResolver(plugin, userAuthService);
-
-        _allowedDomains = _plugin.getEnabledProviders().stream().collect(Collectors.toMap(Function.identity(), this::getAllowedEmailDomains));
+        _accountPolicy = new OpenIdAccountPolicy(plugin, siteConfigPreferences);
     }
 
     @Autowired
@@ -218,7 +210,7 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
             throw new BadCredentialsException(e.getMessage(), e);
         }
 
-        if (shouldFilterEmailDomains(providerId) && !isAllowedEmailDomain(user.getEmail(), providerId)) {
+        if (_accountPolicy.shouldFilterEmailDomains(providerId) && !_accountPolicy.isEmailDomainAllowed(user.getEmail(), providerId)) {
             throw new NewAutoAccountNotAutoEnabledException("New OpenID user, email is not on the domain whitelist.", user);
         }
         if (!_plugin.isEnabled(providerId)) {
@@ -245,7 +237,7 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         if (!xdatUser.isEnabled()) {
             throw new NewAutoAccountNotAutoEnabledException("New OpenID user, needs to to be enabled.", xdatUser);
         }
-        if (getSiteConfigPreferences().getEmailVerification() && !xdatUser.isVerified()) {
+        if (_accountPolicy.isEmailVerificationRequired(xdatUser)) {
             log.info("User {} is not verified, redirecting to verification page.", xdatUser.getUsername());
             String encodedEmail = URLEncoder.encode(xdatUser.getEmail(), StandardCharsets.UTF_8.toString());
             String encodedUsername = URLEncoder.encode(xdatUser.getUsername(), StandardCharsets.UTF_8.toString());
@@ -351,46 +343,6 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         }
     }
 
-    private boolean shouldFilterEmailDomains(final String providerId) {
-        return Boolean.parseBoolean(StringUtils.defaultIfBlank(_plugin.getProperty(providerId, "shouldFilterEmailDomains"), "false"));
-    }
-
-    private List<String> getAllowedEmailDomains(final String providerId) {
-        return shouldFilterEmailDomains(providerId)
-                ? Arrays.stream(_plugin.getProperty(providerId, "allowedEmailDomains").split("\\s*,\\s*"))
-                .map(StringUtils::lowerCase)
-                .collect(Collectors.toList())
-                : ALL_DOMAINS;
-    }
-
-    private boolean isAllowedEmailDomain(final String email, final String providerId) {
-        if (!_allowedDomains.containsKey(providerId)) {
-            return false;
-        }
-        if (!shouldFilterEmailDomains(providerId)) {
-            return true;
-        }
-        final List<String> allowedDomains = _allowedDomains.get(providerId);
-        if (ListUtils.isEqualList(ALL_DOMAINS, allowedDomains)) {
-            return true;
-        }
-        final String[] emailParts = email.split("@");
-        final String domain = emailParts.length >= 2 ? emailParts[1] : null;
-        if (StringUtils.isBlank(domain)) {
-            log.warn("Couldn't parse a domain from the email address {}, returning false", email);
-            return false;
-        }
-        if (allowedDomains.contains(StringUtils.lowerCase(domain))) {
-            log.debug("Matched email {} with allowed domain {} for provider {}", email, _allowedDomains, providerId);
-            return true;
-        }
-        log.debug("Email {} did not match any allowed domains for provider {}: {}", email, providerId, StringUtils.join(_allowedDomains, ", "));
-        return false;
-    }
-
-    protected SiteConfigPreferences getSiteConfigPreferences() {
-        return _siteConfigPreferences;
-    }
 
     private Map<String, String> getUserInfo(final String accessToken, final String userInfoEndpoint) {
         // See https://openid.net/specs/openid-connect-core-1_0.html#UserInfo
