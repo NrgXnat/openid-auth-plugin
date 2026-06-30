@@ -1,5 +1,6 @@
 package au.edu.qcif.xnat.auth.openid.bearer;
 
+import au.edu.qcif.xnat.auth.openid.OpenIdAccountPolicy;
 import au.edu.qcif.xnat.auth.openid.OpenIdAuthPlugin;
 import au.edu.qcif.xnat.auth.openid.OpenIdConnectUserDetails;
 import au.edu.qcif.xnat.auth.openid.OpenIdUserResolver;
@@ -7,6 +8,8 @@ import au.edu.qcif.xnat.auth.openid.gate.AuthPath;
 import au.edu.qcif.xnat.auth.openid.gate.ClaimGate;
 import au.edu.qcif.xnat.auth.openid.gate.ClaimGateException;
 import au.edu.qcif.xnat.auth.openid.gate.ClaimGateFactory;
+import au.edu.qcif.xnat.auth.openid.gate.GateConfig;
+import au.edu.qcif.xnat.auth.openid.tokens.OpenIdAuthRequestToken;
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
 import java.net.URI;
@@ -14,9 +17,12 @@ import java.net.URISyntaxException;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 import org.nrg.xdat.exceptions.UsernameAuthMappingNotFoundException;
+import org.nrg.xdat.preferences.SiteConfigPreferences;
 import org.nrg.xdat.services.XdatUserAuthService;
+import org.nrg.xdat.turbine.utils.AccessLogger;
 import org.nrg.xft.security.UserI;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.security.authentication.AuthenticationEventPublisher;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -99,12 +105,25 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter {
     private final Map<String, BearerTokenValidator> _validators;
     private final ClaimGateFactory _gateFactory;
     private final OpenIdUserResolver _userResolver;
+    private final OpenIdAccountPolicy _accountPolicy;
+    private final AuthenticationEventPublisher _eventPublisher;
 
     @Autowired
     public BearerTokenAuthenticationFilter(final OpenIdAuthPlugin plugin,
-                                           final XdatUserAuthService userAuthService) {
-        this(plugin, new BearerTokenExtractor(), new BearerProviderResolver(plugin), buildValidators(plugin),
-                new ClaimGateFactory(plugin), new OpenIdUserResolver(plugin, userAuthService));
+                                           final XdatUserAuthService userAuthService,
+                                           final SiteConfigPreferences siteConfigPreferences,
+                                           final AuthenticationEventPublisher eventPublisher) {
+        // Build the provider resolver once and derive the validators from it, so the eligible-provider
+        // config is scanned (and any fail-closed errors logged) a single time at startup.
+        _plugin = plugin;
+        _extractor = new BearerTokenExtractor();
+        _providerResolver = new BearerProviderResolver(plugin);
+        _validators = buildValidators(_providerResolver, plugin);
+        _gateFactory = new ClaimGateFactory(plugin);
+        _userResolver = new OpenIdUserResolver(plugin, userAuthService);
+        _accountPolicy = new OpenIdAccountPolicy(plugin, siteConfigPreferences);
+        _eventPublisher = eventPublisher;
+        warnIfAudienceGateUnconfigured();
     }
 
     /** Test seam: inject pre-built collaborators (offline validators, fake resolvers). */
@@ -113,19 +132,24 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter {
                                     final BearerProviderResolver providerResolver,
                                     final Map<String, BearerTokenValidator> validators,
                                     final ClaimGateFactory gateFactory,
-                                    final OpenIdUserResolver userResolver) {
+                                    final OpenIdUserResolver userResolver,
+                                    final OpenIdAccountPolicy accountPolicy,
+                                    final AuthenticationEventPublisher eventPublisher) {
         _plugin = plugin;
         _extractor = extractor;
         _providerResolver = providerResolver;
         _validators = validators;
         _gateFactory = gateFactory;
         _userResolver = userResolver;
+        _accountPolicy = accountPolicy;
+        _eventPublisher = eventPublisher;
     }
 
     /** Builds one cached validator per eligible provider; a malformed jwksUri excludes that provider. */
-    private static Map<String, BearerTokenValidator> buildValidators(final OpenIdAuthPlugin plugin) {
+    private static Map<String, BearerTokenValidator> buildValidators(final BearerProviderResolver providerResolver,
+                                                                     final OpenIdAuthPlugin plugin) {
         final Map<String, BearerTokenValidator> validators = new LinkedHashMap<>();
-        for (final String providerId : new BearerProviderResolver(plugin).providerIds()) {
+        for (final String providerId : providerResolver.providerIds()) {
             final String issuer = plugin.getProperty(providerId, ISSUER);
             final String jwksUri = plugin.getProperty(providerId, JWKS_URI);
             try {
@@ -136,6 +160,24 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter {
             }
         }
         return validators;
+    }
+
+    /**
+     * The bearer audience gate is on by default (see {@link GateConfig}); warn at startup for any
+     * bearer provider that has it enabled but no accepted audiences configured, since every token
+     * will then be rejected with 403 (fail closed) until {@code audCheck.acceptedAudiences} is set.
+     */
+    private void warnIfAudienceGateUnconfigured() {
+        for (final String providerId : _providerResolver.providerIds()) {
+            final GateConfig config = new GateConfig(_plugin, providerId, AuthPath.BEARER);
+            if (config.enabled("audCheck") && StringUtils.isBlank(config.value("audCheck.acceptedAudiences"))) {
+                log.warn("Provider '{}' has the bearer audience gate enabled (it defaults to on) but no "
+                                + "openid.{}.audCheck.acceptedAudiences is configured — every bearer token will be "
+                                + "rejected with 403 until accepted audiences are set. Configure acceptedAudiences, "
+                                + "or set openid.{}.bearer.audCheck.enabled=false to disable the check (not recommended).",
+                        providerId, providerId, providerId);
+            }
+        }
     }
 
     @Override
@@ -208,12 +250,26 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter {
             return;
         }
 
+        // Honor the same per-provider email-domain whitelist the interactive path enforces.
+        if (_accountPolicy.shouldFilterEmailDomains(providerId) && !_accountPolicy.isEmailDomainAllowed(user.getEmail(), providerId)) {
+            log.info("Bearer token identity email domain is not on the whitelist for provider '{}'", providerId);
+            forbidden(response, "the email domain for this identity is not permitted");
+            return;
+        }
+
         final UserI xdatUser = resolveUser(providerId, user, response);
         if (xdatUser == null) {
             return; // resolveUser already wrote the 403
         }
         if (!xdatUser.isEnabled()) {
             forbidden(response, "the XNAT account for this identity is not enabled");
+            return;
+        }
+        // Honor the same site-wide email-verification requirement the interactive path enforces (which
+        // redirects the browser to a verification page; the REST path can only reject with 403).
+        if (_accountPolicy.isEmailVerificationRequired(xdatUser)) {
+            log.info("Bearer token identity '{}' is not verified for provider '{}'", xdatUser.getUsername(), providerId);
+            forbidden(response, "the XNAT account for this identity is not verified");
             return;
         }
         if (!xdatUser.isAccountNonLocked()) {
@@ -223,11 +279,31 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter {
 
         final Authentication authentication = new BearerAuthToken(xdatUser, providerId);
         SecurityContextHolder.getContext().setAuthentication(authentication);
+        recordSuccessfulAuthentication(user.getUsername(), xdatUser, providerId, request);
         log.debug("Bearer token authenticated user '{}' for provider '{}'", xdatUser.getUsername(), providerId);
         // Run the rest of the chain behind a wrapper that refuses to create a container session, so
         // downstream filters that call request.getSession() (e.g. XNAT's XnatExpiredPasswordFilter)
         // cannot make the container mint a JSESSIONID for this stateless, token-authenticated request.
         chain.doFilter(new StatelessSessionRequestWrapper(request), response);
+    }
+
+    /**
+     * Mirrors the interactive path's success-side bookkeeping: publishes an authentication-success
+     * event (so XNAT listeners such as failed-login-counter reset and last-login tracking fire) and
+     * writes an XNAT access-log entry. Audit/event failures must never turn a validly authenticated
+     * request into a 500, so they are logged and swallowed. The access logger reads
+     * {@code request.getSession(false)} only when session tracking is on, which is {@code null} here,
+     * so it creates no session.
+     */
+    private void recordSuccessfulAuthentication(final String requesterUsername, final UserI xdatUser,
+                                                final String providerId, final HttpServletRequest request) {
+        try {
+            _eventPublisher.publishAuthenticationSuccess(new OpenIdAuthRequestToken(requesterUsername, providerId));
+            AccessLogger.LogServiceAccess(xdatUser.getUsername(), request, "Authentication", "SUCCESS");
+        } catch (final RuntimeException e) {
+            log.warn("Bearer authentication succeeded for '{}' but audit logging / event publishing failed",
+                    xdatUser.getUsername(), e);
+        }
     }
 
     /**
@@ -272,11 +348,13 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter {
         return new OpenIdConnectUserDetails(providerId, authInfo, null, _plugin);
     }
 
-    /** {@code bearer.forceUserCreate} if set, otherwise the shared {@code forceUserCreate}. */
+    /**
+     * {@code openid.{p}.bearer.forceUserCreate} if set, otherwise the shared
+     * {@code openid.{p}.forceUserCreate}. Uses the same path-scoped-with-shared-fallback resolution
+     * as the claim-gate properties (see {@link GateConfig#value(String)}).
+     */
     private boolean isForceUserCreate(final String providerId) {
-        final String perPath = _plugin.getProperty(providerId, "bearer.forceUserCreate");
-        final String value = StringUtils.isNotBlank(perPath) ? perPath : _plugin.getProperty(providerId, "forceUserCreate");
-        return Boolean.parseBoolean(value);
+        return Boolean.parseBoolean(new GateConfig(_plugin, providerId, AuthPath.BEARER).value("forceUserCreate"));
     }
 
     private void unauthorized(final HttpServletResponse response, final String message) throws IOException {

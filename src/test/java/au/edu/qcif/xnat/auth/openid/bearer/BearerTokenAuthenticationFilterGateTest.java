@@ -38,7 +38,7 @@ public class BearerTokenAuthenticationFilterGateTest {
         providerProps.forEach((key, value) -> lenient().when(plugin.getProperty(PROVIDER, key)).thenReturn(value));
         // Only the gate factory matters here; the other collaborators are unused by applyBearerClaimGates.
         return new BearerTokenAuthenticationFilter(plugin, new BearerTokenExtractor(), null,
-                Collections.emptyMap(), new ClaimGateFactory(plugin), null);
+                Collections.emptyMap(), new ClaimGateFactory(plugin), null, null, null);
     }
 
     private static void applyBearerClaimGates(final BearerTokenAuthenticationFilter filter, final String providerId,
@@ -61,6 +61,7 @@ public class BearerTokenAuthenticationFilterGateTest {
         props.put("roleCheck.rolePath", "resource_access.xnat.roles");
         props.put("roleCheck.requiredRoles", "xnat_access");
         props.put("bearer.roleCheck.enabled", "true");
+        props.put("bearer.audCheck.enabled", "false"); // isolate the role gate (aud defaults on for bearer)
         return props;
     }
 
@@ -94,8 +95,9 @@ public class BearerTokenAuthenticationFilterGateTest {
 
     @Test
     public void noGatesConfiguredAllowsAnyClaims() throws Exception {
-        // No bearer gate toggles stubbed -> gatesFor returns empty -> no gate runs.
-        final BearerTokenAuthenticationFilter filter = filterWith(Collections.emptyMap());
+        // Disable the bearer audience gate (on by default) and stub no other toggles -> no gate runs.
+        final BearerTokenAuthenticationFilter filter =
+                filterWith(Collections.singletonMap("bearer.audCheck.enabled", "false"));
 
         applyBearerClaimGates(filter, PROVIDER, claimsWithRoles("anything"));
     }

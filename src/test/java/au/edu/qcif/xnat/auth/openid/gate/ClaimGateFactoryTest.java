@@ -21,7 +21,8 @@ import static org.mockito.Mockito.lenient;
 /**
  * Unit tests for {@link ClaimGateFactory}: per-(provider, path) gate assembly from configuration,
  * including the per-path override falling back to the shared per-provider definition (for both the
- * "what to check" fields and the enable toggles), and the default-off behaviour of the toggles.
+ * "what to check" fields and the enable toggles), and the default-off behaviour of the toggles —
+ * with the one documented exception that the audience gate defaults on for the bearer path.
  */
 @RunWith(MockitoJUnitRunner.class)
 public class ClaimGateFactoryTest {
@@ -46,8 +47,23 @@ public class ClaimGateFactoryTest {
     // ---- enablement ----------------------------------------------------------------------------
 
     @Test
-    public void noGatesWhenAllTogglesOff() {
+    public void noGatesOnIdTokenPathWhenAllTogglesOff() {
         assertTrue(factory().gatesFor(PROVIDER, AuthPath.ID_TOKEN).isEmpty());
+    }
+
+    @Test
+    public void bearerAudienceGateIsOnByDefault() {
+        // With nothing configured, the bearer path still gets the audience gate (fail-closed default).
+        final List<ClaimGate> gates = factory().gatesFor(PROVIDER, AuthPath.BEARER);
+
+        assertEquals(1, gates.size());
+        assertTrue(gates.get(0) instanceof AudienceGate);
+    }
+
+    @Test
+    public void bearerAudienceGateCanBeDisabledExplicitly() {
+        props.put("bearer.audCheck.enabled", "false");
+
         assertTrue(factory().gatesFor(PROVIDER, AuthPath.BEARER).isEmpty());
     }
 
@@ -124,6 +140,7 @@ public class ClaimGateFactoryTest {
         props.put("roleCheck.requiredRoles", "realm_admin");
         props.put("bearer.roleCheck.rolePath", "realm_access.roles");
         props.put("bearer.roleCheck.enabled", "true");
+        props.put("bearer.audCheck.enabled", "false"); // isolate the role gate (aud defaults on for bearer)
 
         final RoleGate gate = (RoleGate) factory().gatesFor(PROVIDER, AuthPath.BEARER).get(0);
 

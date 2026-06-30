@@ -1,5 +1,6 @@
 package au.edu.qcif.xnat.auth.openid.bearer;
 
+import au.edu.qcif.xnat.auth.openid.OpenIdAccountPolicy;
 import au.edu.qcif.xnat.auth.openid.OpenIdAuthPlugin;
 import au.edu.qcif.xnat.auth.openid.OpenIdUserResolver;
 import au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant;
@@ -24,11 +25,13 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnitRunner;
 import org.nrg.xdat.exceptions.UsernameAuthMappingNotFoundException;
+import org.nrg.xdat.preferences.SiteConfigPreferences;
 import org.nrg.xdat.services.XdatUserAuthService;
 import org.nrg.xft.security.UserI;
 import org.springframework.mock.web.MockFilterChain;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
+import org.springframework.security.authentication.AuthenticationEventPublisher;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 
@@ -62,6 +65,7 @@ public class BearerTokenAuthenticationFilterTest {
 
     private static final String PROVIDER = "keycloak";
     private static final String ISSUER = "https://idp.example/realms/xnat";
+    private static final String AUDIENCE = "xnat-api";
     private static final String USERNAME = "keycloak_alice"; // default pattern [providerId]_[sub], sub="alice"
 
     private static RSAKey signingKey;
@@ -70,6 +74,8 @@ public class BearerTokenAuthenticationFilterTest {
 
     @Mock private OpenIdAuthPlugin plugin;
     @Mock private OpenIdUserResolver userResolver;
+    @Mock private SiteConfigPreferences siteConfigPreferences;
+    @Mock private AuthenticationEventPublisher eventPublisher;
 
     private BearerTokenAuthenticationFilter filter;
     private MockHttpServletRequest request;
@@ -90,12 +96,17 @@ public class BearerTokenAuthenticationFilterTest {
         lenient().when(plugin.getProperty(PROVIDER, "bearer.enabled")).thenReturn("true");
         lenient().when(plugin.getProperty(PROVIDER, OpenIdAuthConstant.ISSUER)).thenReturn(ISSUER);
         lenient().when(plugin.getProperty(PROVIDER, OpenIdAuthConstant.JWKS_URI)).thenReturn("https://idp.example/jwks");
+        // The bearer audience gate is on by default; configure the accepted audience so a token
+        // carrying it (see validClaims()) passes the gate, and the happy path exercises aud-on.
+        lenient().when(plugin.getProperty(PROVIDER, "audCheck.acceptedAudiences")).thenReturn(AUDIENCE);
 
         final Map<String, BearerTokenValidator> validators =
                 Collections.singletonMap(PROVIDER, new BearerTokenValidator(ISSUER, trustedSource));
 
+        final OpenIdAccountPolicy accountPolicy = new OpenIdAccountPolicy(plugin, siteConfigPreferences);
         filter = new BearerTokenAuthenticationFilter(plugin, new BearerTokenExtractor(),
-                new BearerProviderResolver(plugin), validators, new ClaimGateFactory(plugin), userResolver);
+                new BearerProviderResolver(plugin), validators, new ClaimGateFactory(plugin), userResolver,
+                accountPolicy, eventPublisher);
 
         request = new MockHttpServletRequest();
         response = new MockHttpServletResponse();
@@ -113,6 +124,7 @@ public class BearerTokenAuthenticationFilterTest {
         return new JWTClaimsSet.Builder()
                 .issuer(ISSUER)
                 .subject("alice")
+                .audience(AUDIENCE)
                 .expirationTime(new Date(System.currentTimeMillis() + 3_600_000));
     }
 
@@ -300,5 +312,57 @@ public class BearerTokenAuthenticationFilterTest {
         assertEquals(HttpServletResponse.SC_FORBIDDEN, response.getStatus());
         assertNull(chain.getRequest());
         assertNull(currentAuth());
+    }
+
+    @Test
+    public void emailDomainNotOnWhitelistIsForbidden() throws Exception {
+        // Provider filters email domains; the token's email is off the whitelist.
+        when(plugin.getProperty(PROVIDER, "shouldFilterEmailDomains")).thenReturn("true");
+        when(plugin.getProperty(PROVIDER, "allowedEmailDomains")).thenReturn("wustl.edu");
+        // EMAIL ("emailProperty") configures which claim carries the address; point it at the "email" claim.
+        when(plugin.getProperty(PROVIDER, OpenIdAuthConstant.EMAIL)).thenReturn("email");
+        // Rebuild the filter so the account policy picks up the whitelist config.
+        final OpenIdAccountPolicy accountPolicy = new OpenIdAccountPolicy(plugin, siteConfigPreferences);
+        filter = new BearerTokenAuthenticationFilter(plugin, new BearerTokenExtractor(),
+                new BearerProviderResolver(plugin),
+                Collections.singletonMap(PROVIDER, new BearerTokenValidator(ISSUER, trustedSource)),
+                new ClaimGateFactory(plugin), userResolver, accountPolicy, eventPublisher);
+
+        bearer(sign(signingKey, validClaims().claim("email", "alice@gmail.com").build()));
+
+        doFilter();
+
+        assertEquals(HttpServletResponse.SC_FORBIDDEN, response.getStatus());
+        assertNull("chain must not be invoked", chain.getRequest());
+        assertNull(currentAuth());
+    }
+
+    @Test
+    public void unverifiedAccountWhenVerificationRequiredIsForbidden() throws Exception {
+        when(siteConfigPreferences.getEmailVerification()).thenReturn(true);
+        final UserI unverified = mock(UserI.class);
+        lenient().when(unverified.getUsername()).thenReturn(USERNAME);
+        when(unverified.isEnabled()).thenReturn(true);
+        when(unverified.isVerified()).thenReturn(false);
+        when(userResolver.resolveExisting(USERNAME, PROVIDER)).thenReturn(unverified);
+        bearer(sign(signingKey, validClaims().build()));
+
+        doFilter();
+
+        assertEquals(HttpServletResponse.SC_FORBIDDEN, response.getStatus());
+        assertNull("chain must not be invoked", chain.getRequest());
+        assertNull(currentAuth());
+    }
+
+    @Test
+    public void successPublishesAuthenticationSuccessEvent() throws Exception {
+        final UserI user = enabledUser();
+        when(userResolver.resolveExisting(USERNAME, PROVIDER)).thenReturn(user);
+        bearer(sign(signingKey, validClaims().build()));
+
+        doFilter();
+
+        assertNotNull("chain should be invoked", chain.getRequest());
+        org.mockito.Mockito.verify(eventPublisher).publishAuthenticationSuccess(org.mockito.ArgumentMatchers.any());
     }
 }
