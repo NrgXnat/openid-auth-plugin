@@ -170,20 +170,32 @@ XNAT receives directly from the token endpoint), it is fully validated: the RSA 
 verified against the provider's published keys, and the `iss` and `exp` claims are checked. Only
 the `RS256`/`RS384`/`RS512` algorithms are accepted.
 
+Once the token is validated, a bearer caller is held to the **same account policy as an interactive
+login** for that provider: the per-provider email-domain whitelist
+(`openid.providerId.shouldFilterEmailDomains` / `allowedEmailDomains`) and the site-wide email
+verification requirement both apply. The interactive path redirects the browser when these fail; the
+REST path can only return **403**.
+
 **Status codes:**
 
 | Condition | Status |
 |-----------|--------|
 | Token invalid, expired, wrong/unknown issuer, or unverifiable | **401 Unauthorized** |
-| Token valid but fails a `bearer.*` claim gate | **403 Forbidden** |
-| Token valid but no XNAT account is mapped (and auto-create is off), or the account is disabled/locked | **403 Forbidden** |
+| Token valid but fails a `bearer.*` claim gate (including the audience gate, on by default) | **403 Forbidden** |
+| Token valid but the identity's email domain is not on the whitelist | **403 Forbidden** |
+| Token valid but no XNAT account is mapped (and auto-create is off) | **403 Forbidden** |
+| Token valid but the account is disabled, unverified (when site requires verification), or locked | **403 Forbidden** |
 
 A bearer caller resolves to the same XNAT user that a prior interactive login would create for that
 identity (both derive `auth_user` from the same `usernamePattern`).
 
-> **Recommended:** enable `openid.providerId.bearer.audCheck.enabled` and configure
-> `openid.providerId.audCheck.acceptedAudiences`. On the bearer path the `aud` claim is the
-> confinement boundary that stops a token minted for another client from being replayed against XNAT.
+> **Audience gate is on by default for the bearer path.** On the bearer path the `aud` claim is the
+> confinement boundary that stops a token minted for another client from being replayed against XNAT,
+> so `openid.providerId.bearer.audCheck.enabled` **defaults to `true`** (the interactive path stays
+> off by default). You must configure `openid.providerId.audCheck.acceptedAudiences` to the
+> audience(s) XNAT should accept — **until you do, every bearer token is rejected with 403**
+> (fail-closed; a startup warning is logged). To turn the check off (not recommended), set
+> `openid.providerId.bearer.audCheck.enabled=false`.
 
 #### openid.`providerId`.bearer.enabled
 
