@@ -26,6 +26,7 @@ import org.springframework.security.authentication.AuthenticationEventPublisher;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.web.session.SessionManagementFilter;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
@@ -34,6 +35,7 @@ import javax.servlet.ServletException;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import java.io.IOException;
+import java.lang.reflect.Field;
 import java.net.MalformedURLException;
 import java.text.ParseException;
 import java.util.LinkedHashMap;
@@ -82,6 +84,15 @@ import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.JWKS_URI;
  * per-request {@link EphemeralHttpSession} for {@code getSession(true)} but never registers a session
  * with the container, so no cookie is written.</p>
  *
+ * <p>Serving that ephemeral session introduces one more leak to close: the downstream
+ * {@code SessionManagementFilter} would run its {@code SessionAuthenticationStrategy} for the
+ * newly-authenticated request and {@code RegisterSessionAuthenticationStrategy} would register the
+ * ephemeral session id in XNAT's in-memory {@code SessionRegistry}. Because that session is never a
+ * real container session it is never destroyed, so the registry entry is never evicted — it would
+ * accumulate one permanent entry per bearer request and eventually trip {@code maxSessions}, locking
+ * the caller out. The successful branch therefore also marks the request with
+ * {@link #SESSION_MGMT_FILTER_APPLIED} so that filter skips session management entirely.</p>
+ *
  * <p><b>Why stateless, and what it means for authorization.</b> A bearer access token is a
  * self-contained, per-request credential; the caller re-presents it on every request, so a
  * server-side session adds nothing but cost and surprise (a stray {@code JSESSIONID} the client never
@@ -98,6 +109,38 @@ import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.JWKS_URI;
 @Slf4j
 @Component
 public class BearerTokenAuthenticationFilter extends OncePerRequestFilter {
+
+    /**
+     * Value of Spring Security's package-private {@code SessionManagementFilter.FILTER_APPLIED}
+     * request-attribute key. Marking the forwarded request with it makes the downstream
+     * {@code SessionManagementFilter} treat session management as already handled for this request and
+     * skip its {@code SessionAuthenticationStrategy}. That is what keeps the stateless bearer request
+     * out of the in-memory {@code SessionRegistry}: without it,
+     * {@code RegisterSessionAuthenticationStrategy} calls {@code request.getSession()} (serving the
+     * wrapper's {@link EphemeralHttpSession}) and registers that ephemeral session id, which is then
+     * <em>never</em> evicted — no container session exists to be destroyed, so no
+     * {@code HttpSessionDestroyedEvent} ever fires — accumulating one permanent entry per bearer
+     * request until {@code maxSessions} is reached and the caller is locked out.
+     *
+     * <p>The value is read reflectively from Spring at class load rather than hardcoded so that if a
+     * future Spring Security version changes it, we pick up the new value automatically (field kept) or
+     * fail loudly at startup (field removed/renamed) instead of silently re-introducing the leak.</p>
+     */
+    private static final String SESSION_MGMT_FILTER_APPLIED = resolveSessionMgmtFilterAppliedKey();
+
+    private static String resolveSessionMgmtFilterAppliedKey() {
+        try {
+            final Field field = SessionManagementFilter.class.getDeclaredField("FILTER_APPLIED");
+            field.setAccessible(true);
+            return (String) field.get(null);
+        } catch (final ReflectiveOperationException | RuntimeException e) {
+            throw new IllegalStateException(
+                    "Could not read Spring Security's SessionManagementFilter.FILTER_APPLIED; the bearer "
+                            + "path can no longer suppress downstream session registration and would leak "
+                            + "SessionRegistry entries. Update this plugin for the current Spring Security "
+                            + "version.", e);
+        }
+    }
 
     private final OpenIdAuthPlugin _plugin;
     private final BearerTokenExtractor _extractor;
@@ -284,7 +327,15 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter {
         // Run the rest of the chain behind a wrapper that refuses to create a container session, so
         // downstream filters that call request.getSession() (e.g. XNAT's XnatExpiredPasswordFilter)
         // cannot make the container mint a JSESSIONID for this stateless, token-authenticated request.
-        chain.doFilter(new StatelessSessionRequestWrapper(request), response);
+        final StatelessSessionRequestWrapper statelessRequest = new StatelessSessionRequestWrapper(request);
+        // Also keep the request out of Spring's session-authentication strategy: the downstream
+        // SessionManagementFilter would otherwise register the wrapper's ephemeral session in the
+        // in-memory SessionRegistry, and that entry is never evicted (no container session is ever
+        // destroyed), so it accumulates one leaked entry per bearer request and eventually trips
+        // maxSessions. Marking the request as already session-managed makes that filter skip its
+        // SessionAuthenticationStrategy for this stateless request.
+        statelessRequest.setAttribute(SESSION_MGMT_FILTER_APPLIED, Boolean.TRUE);
+        chain.doFilter(statelessRequest, response);
     }
 
     /**
