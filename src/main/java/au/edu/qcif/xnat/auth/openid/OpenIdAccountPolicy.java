@@ -85,10 +85,18 @@ public class OpenIdAccountPolicy {
     }
 
     private List<String> allowedEmailDomains(final String providerId) {
-        return shouldFilterEmailDomains(providerId)
-                ? Arrays.stream(plugin.getProperty(providerId, "allowedEmailDomains").split("\\s*,\\s*"))
+        if (!shouldFilterEmailDomains(providerId)) {
+            return ALL_DOMAINS;
+        }
+        final String configured = plugin.getProperty(providerId, "allowedEmailDomains");
+        if (StringUtils.isBlank(configured)) {
+            // Filtering is on but no whitelist is configured: fall back to open (allow all domains)
+            // rather than failing construction with an NPE or silently blocking every login.
+            log.warn("Provider '{}' has domain filtering enabled but no 'allowedEmailDomains' configured; allowing all domains", providerId);
+            return ALL_DOMAINS;
+        }
+        return Arrays.stream(configured.split("\\s*,\\s*"))
                 .map(StringUtils::lowerCase)
-                .collect(Collectors.toList())
-                : ALL_DOMAINS;
+                .collect(Collectors.toList());
     }
 }
