@@ -1,0 +1,37 @@
+name: Release - Cut RC Branch
+
+# Thin caller around the shared reusable workflow in NrgXnat/xnat-ci-workflows.
+# Cuts a `releases/<release>-rc` branch from source_branch and bumps
+# source_branch to the next dev version. All release-cut logic lives in the
+# reusable workflow; this file only defines our triggers + inputs.
+
+on:
+  workflow_dispatch:
+    inputs:
+      next_dev_version:
+        description: 'Next dev SNAPSHOT version (e.g. 1.7.0-SNAPSHOT)'
+        type: string
+        required: true
+      source_branch:
+        description: 'Branch to cut from (default: develop)'
+        type: string
+        required: false
+        default: develop
+      trigger_build:
+        description: 'After cut, dispatch build/publish on RC and source_branch'
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: write
+  actions:  write   # dispatch build-publish workflow
+
+jobs:
+  cut-rc:
+    uses: NrgXnat/xnat-ci-workflows/.github/workflows/gradle-release-cut-rc.yml@v1
+    with:
+      next_dev_version: ${{ inputs.next_dev_version }}
+      source_branch:    ${{ inputs.source_branch }}
+      trigger_build:    ${{ inputs.trigger_build }}
+    secrets: inherit

@@ -1,0 +1,37 @@
+name: Release - Promote RC to Main
+
+# Thin caller around the shared reusable workflow in NrgXnat/xnat-ci-workflows.
+# Promotes a stabilized RC branch to a tagged release on target_main. All
+# release-promote logic lives in the reusable workflow; this file only defines
+# our triggers + inputs.
+
+on:
+  workflow_dispatch:
+    inputs:
+      rc_branch:
+        description: 'RC branch to promote (e.g. releases/1.6.0-rc)'
+        type: string
+        required: true
+      target_main:
+        description: 'Branch to merge into (default main)'
+        type: string
+        required: false
+        default: main
+      trigger_build:
+        description: 'After promote, dispatch build/publish on target_main'
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: write   # push RC/main + create tag
+  actions:  write   # dispatch build-publish workflow
+
+jobs:
+  promote:
+    uses: NrgXnat/xnat-ci-workflows/.github/workflows/gradle-release-promote.yml@v1
+    with:
+      rc_branch:     ${{ inputs.rc_branch }}
+      target_main:   ${{ inputs.target_main }}
+      trigger_build: ${{ inputs.trigger_build }}
+    secrets: inherit
