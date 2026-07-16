@@ -153,8 +153,13 @@ public class OpenIdAuthPlugin {
         // Interrogate request to get providerId (e.g. look at url if nothing
         // else)
         String providerId = request.getParameter("providerId");
+        Boolean manageXnatProjectAuthorizations = false;
+        try {
+            manageXnatProjectAuthorizations = Boolean.parseBoolean(getProperty(providerId, "xnatProjectAuthorizations"));
+        } catch(Exception ignored) {}
         log.debug("Provider id is: {}", providerId);
         request.getSession().setAttribute("providerId", providerId);
+        request.getSession().setAttribute("xnatProjectAuthorizations", manageXnatProjectAuthorizations);
         final OAuth2RestTemplate template = new OAuth2RestTemplate(getProtectedResourceDetails(providerId), clientContext);
         template.setAccessTokenProvider(ACCESS_TOKEN_PROVIDER_CHAIN);
         return template;
