@@ -3,6 +3,7 @@ package au.edu.qcif.xnat.auth.openid.bearer;
 import au.edu.qcif.xnat.auth.openid.OpenIdAuthPlugin;
 import au.edu.qcif.xnat.auth.openid.gate.ClaimGateException;
 import au.edu.qcif.xnat.auth.openid.gate.ClaimGateFactory;
+import au.edu.qcif.xnat.auth.openid.gate.TokenContext;
 import com.nimbusds.jwt.JWTClaimsSet;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -42,12 +43,12 @@ public class BearerTokenAuthenticationFilterGateTest {
     }
 
     private static void applyBearerClaimGates(final BearerTokenAuthenticationFilter filter, final String providerId,
-                                              final JWTClaimsSet claims) throws Exception {
+                                              final TokenContext token) throws Exception {
         final Method method = BearerTokenAuthenticationFilter.class.getDeclaredMethod(
-                "applyBearerClaimGates", String.class, JWTClaimsSet.class);
+                "applyBearerClaimGates", String.class, TokenContext.class);
         method.setAccessible(true);
         try {
-            method.invoke(filter, providerId, claims);
+            method.invoke(filter, providerId, token);
         } catch (InvocationTargetException e) {
             if (e.getCause() instanceof Exception) {
                 throw (Exception) e.getCause();
@@ -73,12 +74,20 @@ public class BearerTokenAuthenticationFilterGateTest {
         return new JWTClaimsSet.Builder().claim("resource_access", resourceAccess).build();
     }
 
+    private static Map<String, String> typeGateOn() {
+        final Map<String, String> props = new HashMap<>();
+        props.put("typCheck.enabled", "true");
+        props.put("bearer.typCheck.expectedTypes", "at+jwt");
+        props.put("bearer.audCheck.enabled", "false"); // isolate the type gate (aud defaults on for bearer)
+        return props;
+    }
+
     @Test
     public void passesWhenEnabledGateIsSatisfied() throws Exception {
         final BearerTokenAuthenticationFilter filter = filterWith(roleGateOn());
 
         // No exception expected.
-        applyBearerClaimGates(filter, PROVIDER, claimsWithRoles("xnat_access"));
+        applyBearerClaimGates(filter, PROVIDER, TokenContext.of(claimsWithRoles("xnat_access")));
     }
 
     @Test
@@ -86,7 +95,7 @@ public class BearerTokenAuthenticationFilterGateTest {
         final BearerTokenAuthenticationFilter filter = filterWith(roleGateOn());
 
         try {
-            applyBearerClaimGates(filter, PROVIDER, claimsWithRoles("guest"));
+            applyBearerClaimGates(filter, PROVIDER, TokenContext.of(claimsWithRoles("guest")));
             fail("expected ClaimGateException");
         } catch (ClaimGateException expected) {
             assertTrue(expected.getMessage().contains("xnat_access"));
@@ -99,6 +108,31 @@ public class BearerTokenAuthenticationFilterGateTest {
         final BearerTokenAuthenticationFilter filter =
                 filterWith(Collections.singletonMap("bearer.audCheck.enabled", "false"));
 
-        applyBearerClaimGates(filter, PROVIDER, claimsWithRoles("anything"));
+        applyBearerClaimGates(filter, PROVIDER, TokenContext.of(claimsWithRoles("anything")));
+    }
+
+    @Test
+    public void typeGatePassesWhenTypComesFromTheHeader() throws Exception {
+        // An access token carries no body 'typ'; the gate must fall back to the JWT header.
+        final BearerTokenAuthenticationFilter filter = filterWith(typeGateOn());
+
+        applyBearerClaimGates(filter, PROVIDER,
+                new TokenContext(new JWTClaimsSet.Builder().subject("alice").build(),
+                        Collections.<String, Object>singletonMap("typ", "at+jwt")));
+    }
+
+    @Test
+    public void typeGateRejectsIdTokenReplayedAsBearer() throws Exception {
+        // An id token (header typ=JWT) presented on the bearer path must be rejected.
+        final BearerTokenAuthenticationFilter filter = filterWith(typeGateOn());
+
+        try {
+            applyBearerClaimGates(filter, PROVIDER,
+                    new TokenContext(new JWTClaimsSet.Builder().subject("alice").build(),
+                            Collections.<String, Object>singletonMap("typ", "JWT")));
+            fail("expected ClaimGateException");
+        } catch (ClaimGateException expected) {
+            assertTrue(expected.getMessage().contains("at+jwt"));
+        }
     }
 }

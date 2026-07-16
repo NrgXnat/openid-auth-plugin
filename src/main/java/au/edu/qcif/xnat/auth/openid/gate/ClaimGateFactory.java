@@ -39,7 +39,7 @@ public class ClaimGateFactory {
 
     /**
      * @return the gates enabled for this provider on this path, in a stable order
-     * (audience then role); empty if none are enabled.
+     * (audience, role, then type); empty if none are enabled.
      */
     public List<ClaimGate> gatesFor(final String providerId, final AuthPath path) {
         final GateConfig config = new GateConfig(plugin, providerId, path);
@@ -50,6 +50,9 @@ public class ClaimGateFactory {
         if (config.enabled("roleCheck")) {
             final String rolePath = StringUtils.trimToEmpty(config.value("roleCheck.rolePath"));
             gates.add(new RoleGate(rolePath.split("\\."), commaSet(config.value("roleCheck.requiredRoles"))));
+        }
+        if (config.enabled("typCheck")) {
+            gates.add(new TypeGate(commaSet(config.value("typCheck.expectedTypes"))));
         }
         return gates;
     }

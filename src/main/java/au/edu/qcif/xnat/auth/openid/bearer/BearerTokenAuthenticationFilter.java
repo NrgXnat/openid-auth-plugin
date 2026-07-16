@@ -9,6 +9,7 @@ import au.edu.qcif.xnat.auth.openid.gate.ClaimGate;
 import au.edu.qcif.xnat.auth.openid.gate.ClaimGateException;
 import au.edu.qcif.xnat.auth.openid.gate.ClaimGateFactory;
 import au.edu.qcif.xnat.auth.openid.gate.GateConfig;
+import au.edu.qcif.xnat.auth.openid.gate.TokenContext;
 import au.edu.qcif.xnat.auth.openid.tokens.OpenIdAuthRequestToken;
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
@@ -243,9 +244,12 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter {
 
         // Read the unverified issuer only to select which provider's keys to validate against; the
         // validator re-checks iss cryptographically, so a forged iss cannot pick a weaker provider.
+        // Keep the parsed JWT so the (signature-protected) header can be handed to the claim gates.
+        final SignedJWT parsedJwt;
         final String issuer;
         try {
-            issuer = SignedJWT.parse(rawJwt).getJWTClaimsSet().getIssuer();
+            parsedJwt = SignedJWT.parse(rawJwt);
+            issuer = parsedJwt.getJWTClaimsSet().getIssuer();
         } catch (final ParseException e) {
             unauthorized(response, "malformed bearer token");
             return;
@@ -277,7 +281,7 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter {
         }
 
         try {
-            applyBearerClaimGates(providerId, claims);
+            applyBearerClaimGates(providerId, new TokenContext(claims, parsedJwt.getHeader().toJSONObject()));
         } catch (final ClaimGateException e) {
             log.info("Bearer claim gate rejected token for provider '{}': {}", providerId, e.getMessage());
             forbidden(response, e.getMessage());
@@ -358,13 +362,13 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter {
     }
 
     /**
-     * Runs the bearer-path claim gates against the validated claims. A gate failure throws
+     * Runs the bearer-path claim gates against the validated token. A gate failure throws
      * {@link ClaimGateException}, which the filter maps to 403. With no bearer gates enabled this is
      * a no-op. Package-private so it can be unit-tested directly.
      */
-    void applyBearerClaimGates(final String providerId, final JWTClaimsSet claims) throws ClaimGateException {
+    void applyBearerClaimGates(final String providerId, final TokenContext token) throws ClaimGateException {
         for (final ClaimGate gate : _gateFactory.gatesFor(providerId, AuthPath.BEARER)) {
-            gate.check(claims);
+            gate.check(token);
         }
     }
 

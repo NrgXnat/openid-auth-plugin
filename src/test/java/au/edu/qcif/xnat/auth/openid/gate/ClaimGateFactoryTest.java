@@ -146,12 +146,12 @@ public class ClaimGateFactoryTest {
 
         // A token carrying the role under the OVERRIDE path passes; under the shared path it would not.
         try {
-            gate.check(realmAccessClaims("realm_admin"));
+            gate.check(TokenContext.of(realmAccessClaims("realm_admin")));
         } catch (ClaimGateException e) {
             fail("Token should have carried a valid role claim");
         }
         try {
-            gate.check(resourceAccessClaims("realm_admin"));
+            gate.check(TokenContext.of(resourceAccessClaims("realm_admin")));
             fail("override path should not read the shared resource_access location");
         } catch (ClaimGateException expected) {
             // pass
@@ -167,9 +167,32 @@ public class ClaimGateFactoryTest {
         final RoleGate gate = (RoleGate) factory().gatesFor(PROVIDER, AuthPath.ID_TOKEN).get(0);
 
         try {
-            gate.check(resourceAccessClaims("xnat_access")); // throws if the shared path was not used
+            gate.check(TokenContext.of(resourceAccessClaims("xnat_access"))); // throws if the shared path was not used
         } catch (ClaimGateException e) {
             fail("shared path was not used");
+        }
+    }
+
+    // ---- type gate -----------------------------------------------------------------------------
+
+    @Test
+    public void typeGateEnabledOnBearerPath() {
+        props.put("typCheck.enabled", "true");
+        props.put("bearer.typCheck.expectedTypes", "at+jwt");
+        props.put("bearer.audCheck.enabled", "false"); // isolate the type gate (aud defaults on for bearer)
+
+        final List<ClaimGate> gates = factory().gatesFor(PROVIDER, AuthPath.BEARER);
+
+        assertEquals(1, gates.size());
+        assertTrue(gates.get(0) instanceof TypeGate);
+    }
+
+    @Test
+    public void typeGateAbsentByDefault() {
+        assertTrue(factory().gatesFor(PROVIDER, AuthPath.ID_TOKEN).isEmpty());
+        // Bearer has only the default-on audience gate, never the type gate, unless typCheck is enabled.
+        for (final ClaimGate gate : factory().gatesFor(PROVIDER, AuthPath.BEARER)) {
+            assertTrue(!(gate instanceof TypeGate));
         }
     }
 

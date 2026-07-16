@@ -21,13 +21,13 @@ import au.edu.qcif.xnat.auth.openid.gate.AuthPath;
 import au.edu.qcif.xnat.auth.openid.gate.ClaimGate;
 import au.edu.qcif.xnat.auth.openid.gate.ClaimGateException;
 import au.edu.qcif.xnat.auth.openid.gate.ClaimGateFactory;
+import au.edu.qcif.xnat.auth.openid.gate.TokenContext;
 import au.edu.qcif.xnat.auth.openid.service.KeystoreService;
 import au.edu.qcif.xnat.auth.openid.tokens.OpenIdAuthRequestToken;
 import au.edu.qcif.xnat.auth.openid.tokens.OpenIdAuthToken;
 import com.nimbusds.jose.JOSEException;
 import com.nimbusds.jose.crypto.RSADecrypter;
 import com.nimbusds.jwt.EncryptedJWT;
-import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.collections.MapUtils;
@@ -175,9 +175,9 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         log.debug("Getting idToken...");
         final String idToken = accessToken.getAdditionalInformation().get("id_token").toString().trim();
 
-        final JWTClaimsSet claimsSet;
+        final TokenContext tokenContext;
         try {
-            claimsSet = parseIdToken(idToken, providerId);
+            tokenContext = parseIdToken(idToken, providerId);
         } catch (JOSEException | ParseException e) {
             log.error("An unexpected error occurred attempting to parse id_token", e);
             throw new BadCredentialsException("Failed to parse id_token", e);
@@ -186,9 +186,9 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
             throw new BadCredentialsException("Provider not configured", e);
         }
 
-        applyIdTokenClaimGates(providerId, claimsSet);
+        applyIdTokenClaimGates(providerId, tokenContext);
 
-        final Map<String, String> authInfo = claimsSet.getClaims().entrySet().stream()
+        final Map<String, String> authInfo = tokenContext.claims().getClaims().entrySet().stream()
                 .collect(Collectors.toMap(
                         Map.Entry::getKey,
                         e -> e.getValue() != null ? e.getValue().toString() : ""
@@ -308,17 +308,20 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         return userMessage;
     }
 
-    private JWTClaimsSet parseIdToken(final String idToken, final String providerId)
+    private TokenContext parseIdToken(final String idToken, final String providerId)
             throws JOSEException, ParseException, NotFoundException {
+        final SignedJWT signedJWT;
         if (isIdTokenEncrypted(idToken)) {
             final EncryptedJWT encryptedJWT = EncryptedJWT.parse(idToken);
             encryptedJWT.decrypt(new RSADecrypter(_keystoreService.getEncryptionPrivateKey(providerId)));
 
+            // The decrypted payload is the inner signed JWT, whose header carries the meaningful typ.
             final String decryptedPayload = encryptedJWT.getPayload().toString();
-            return SignedJWT.parse(decryptedPayload).getJWTClaimsSet();
+            signedJWT = SignedJWT.parse(decryptedPayload);
         } else {
-            return SignedJWT.parse(idToken).getJWTClaimsSet();
+            signedJWT = SignedJWT.parse(idToken);
         }
+        return new TokenContext(signedJWT.getJWTClaimsSet(), signedJWT.getHeader().toJSONObject());
     }
 
     private boolean isIdTokenEncrypted(final String idToken) {
@@ -332,10 +335,10 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
      * to {@link BadCredentialsException}, reusing the existing validation-failure handling. With no
      * gates enabled this is a no-op.
      */
-    void applyIdTokenClaimGates(final String providerId, final JWTClaimsSet claims) {
+    void applyIdTokenClaimGates(final String providerId, final TokenContext token) {
         try {
             for (final ClaimGate gate : _gateFactory.gatesFor(providerId, AuthPath.ID_TOKEN)) {
-                gate.check(claims);
+                gate.check(token);
             }
         } catch (final ClaimGateException e) {
             log.info("OpenID claim gate rejected user for provider '{}': {}", providerId, e.getMessage());

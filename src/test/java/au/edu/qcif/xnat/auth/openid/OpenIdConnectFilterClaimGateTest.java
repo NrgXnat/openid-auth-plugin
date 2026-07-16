@@ -1,5 +1,6 @@
 package au.edu.qcif.xnat.auth.openid;
 
+import au.edu.qcif.xnat.auth.openid.gate.TokenContext;
 import au.edu.qcif.xnat.auth.openid.service.KeystoreService;
 import com.nimbusds.jwt.JWTClaimsSet;
 import org.junit.Test;
@@ -52,10 +53,10 @@ public class OpenIdConnectFilterClaimGateTest {
     private static void applyIdTokenClaimGates(final OpenIdConnectFilter filter, final String providerId,
                                                final JWTClaimsSet claims) throws Exception {
         final Method method = OpenIdConnectFilter.class.getDeclaredMethod(
-                "applyIdTokenClaimGates", String.class, JWTClaimsSet.class);
+                "applyIdTokenClaimGates", String.class, TokenContext.class);
         method.setAccessible(true);
         try {
-            method.invoke(filter, providerId, claims);
+            method.invoke(filter, providerId, TokenContext.of(claims));
         } catch (InvocationTargetException e) {
             // Unwrap so callers can assert on the real cause (e.g. BadCredentialsException).
             if (e.getCause() instanceof Exception) {

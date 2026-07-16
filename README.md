@@ -104,10 +104,10 @@ Comma delimted whitelist of domains.
 
 Allows skipping of user creation, usually set to true.
 
-### Claim-validation gates (audience and role)
+### Claim-validation gates (audience, role, and type)
 
-Two optional gates can reject a valid token whose claims do not meet an authorization
-requirement. Both are **opt-in and default off**, and run independently on two paths: the
+Three optional gates can reject a valid token whose claims do not meet an authorization
+requirement. All are **opt-in and default off**, and run independently on two paths: the
 interactive **ID-token** path (`idToken`) and the **bearer-token** path (`bearer`). A rejected user
 is denied — they are not routed to the admin auto-enroll queue.
 
@@ -150,6 +150,25 @@ overriding the shared toggle above for this path. Defaults to the shared toggle,
 
 Enable (or, with `false`, disable) the audience / role gate on the bearer-token path, overriding the
 shared toggle above for this path. Defaults to the shared toggle, otherwise `false`.
+
+#### openid.`providerId`.typCheck.enabled
+
+Enable the type gate. Default `false`. The type gate rejects a token whose `typ` is not one of the
+accepted values, letting you distinguish an access token from an id token and reject one presented on
+the wrong path. Because the gate applies equally to both paths, this shared toggle is the natural
+place to turn it on; a path-scoped `idToken.typCheck.enabled` / `bearer.typCheck.enabled` can still
+override it for one path. The gate reads `typ` from the token **body** claim first
+(e.g. Keycloak `"typ":"Bearer"`/`"ID"`), falling back to the JWT **header** when the body has none
+(e.g. RFC 9068 / IdentityServer `"typ":"at+jwt"` for access tokens, `"JWT"` for id tokens). It only
+works if your provider emits a `typ` that distinguishes the token kinds.
+
+#### openid.`providerId`.bearer.typCheck.expectedTypes / openid.`providerId`.idToken.typCheck.expectedTypes
+
+Comma-delimited list of accepted `typ` values for that path (a case-sensitive any-of test). **Set
+this per path**, because the expected type legitimately differs between the two paths (e.g. bearer
+`at+jwt,Bearer` versus idToken `JWT,ID`). A shared `openid.providerId.typCheck.expectedTypes` is
+supported by the resolution rules but discouraged: a single value would be wrong for at least one
+path. Enabling the gate with no `expectedTypes` for a path rejects every token on it (fail-closed).
 
 ### Bearer-token authentication
 

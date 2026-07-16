@@ -33,7 +33,7 @@ public class RoleGateTest {
 
     private static void assertPasses(final RoleGate gate, final JWTClaimsSet claims) {
         try {
-            gate.check(claims);
+            gate.check(TokenContext.of(claims));
         } catch (ClaimGateException e) {
             fail("claims did not pass");
         }
@@ -42,7 +42,7 @@ public class RoleGateTest {
 
     private static void assertRejects(final RoleGate gate, final JWTClaimsSet claims) {
         try {
-            gate.check(claims);
+            gate.check(TokenContext.of(claims));
             fail("expected ClaimGateException");
         } catch (ClaimGateException expected) {
             // pass
