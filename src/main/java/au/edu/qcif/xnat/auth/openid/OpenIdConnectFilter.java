@@ -21,33 +21,25 @@ import au.edu.qcif.xnat.auth.openid.gate.AuthPath;
 import au.edu.qcif.xnat.auth.openid.gate.ClaimGate;
 import au.edu.qcif.xnat.auth.openid.gate.ClaimGateException;
 import au.edu.qcif.xnat.auth.openid.gate.ClaimGateFactory;
+import au.edu.qcif.xnat.auth.openid.gate.TokenContext;
 import au.edu.qcif.xnat.auth.openid.service.KeystoreService;
 import au.edu.qcif.xnat.auth.openid.tokens.OpenIdAuthRequestToken;
 import au.edu.qcif.xnat.auth.openid.tokens.OpenIdAuthToken;
 import com.nimbusds.jose.JOSEException;
 import com.nimbusds.jose.crypto.RSADecrypter;
 import com.nimbusds.jwt.EncryptedJWT;
-import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
 import lombok.extern.slf4j.Slf4j;
-import org.apache.commons.collections.ListUtils;
 import org.apache.commons.collections.MapUtils;
-import org.apache.commons.lang3.RegExUtils;
 import org.apache.commons.lang3.StringUtils;
-import org.apache.velocity.VelocityContext;
 import org.nrg.framework.generics.GenericUtils;
 import org.nrg.xapi.exceptions.NotFoundException;
-import org.nrg.xdat.entities.XdatUserAuth;
 import org.nrg.xdat.exceptions.UsernameAuthMappingNotFoundException;
 import org.nrg.xdat.preferences.SiteConfigPreferences;
 import org.nrg.xdat.security.helpers.UserHelper;
-import org.nrg.xdat.security.helpers.Users;
 import org.nrg.xdat.services.XdatUserAuthService;
 import org.nrg.xdat.turbine.utils.AccessLogger;
-import org.nrg.xdat.turbine.utils.AdminUtils;
 import org.nrg.xdat.turbine.utils.TurbineUtils;
-import org.nrg.xft.event.EventDetails;
-import org.nrg.xft.event.EventUtils;
 import org.nrg.xft.security.UserI;
 import org.nrg.xnat.security.exceptions.NewAutoAccountNotAutoEnabledException;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -57,7 +49,6 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.security.authentication.AuthenticationEventPublisher;
 import org.springframework.security.authentication.AuthenticationManager;
-import org.springframework.security.authentication.AuthenticationServiceException;
 import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.authentication.CredentialsExpiredException;
 import org.springframework.security.core.Authentication;
@@ -80,11 +71,8 @@ import java.io.IOException;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.text.ParseException;
-import java.util.Arrays;
 import java.util.Collections;
-import java.util.List;
 import java.util.Map;
-import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
@@ -97,7 +85,6 @@ import java.util.stream.Collectors;
 @Slf4j
 @Component
 public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter {
-    private static final List<String> ALL_DOMAINS = Collections.singletonList("*");
 
     /**
      * Session attribute key for storing OpenID error messages to display on the login page.
@@ -106,11 +93,10 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
 
     private final OpenIdAuthPlugin _plugin;
     private final AuthenticationEventPublisher _eventPublisher;
-    private final XdatUserAuthService _userAuthService;
-    private final SiteConfigPreferences _siteConfigPreferences;
-    private final Map<String, List<String>> _allowedDomains;
     private final KeystoreService _keystoreService;
     private final ClaimGateFactory _gateFactory;
+    private final OpenIdUserResolver _userResolver;
+    private final OpenIdAccountPolicy _accountPolicy;
 
     private OAuth2RestTemplate _restTemplate;
 
@@ -126,12 +112,10 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         setAuthenticationManager(new NoopAuthenticationManager());
         _plugin = plugin;
         _eventPublisher = eventPublisher;
-        _userAuthService = userAuthService;
-        _siteConfigPreferences = siteConfigPreferences;
         _keystoreService = keystoreService;
         _gateFactory = new ClaimGateFactory(plugin);
-
-        _allowedDomains = _plugin.getEnabledProviders().stream().collect(Collectors.toMap(Function.identity(), this::getAllowedEmailDomains));
+        _userResolver = new OpenIdUserResolver(plugin, userAuthService);
+        _accountPolicy = new OpenIdAccountPolicy(plugin, siteConfigPreferences);
     }
 
     @Autowired
@@ -191,9 +175,9 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         log.debug("Getting idToken...");
         final String idToken = accessToken.getAdditionalInformation().get("id_token").toString().trim();
 
-        final JWTClaimsSet claimsSet;
+        final TokenContext tokenContext;
         try {
-            claimsSet = parseIdToken(idToken, providerId);
+            tokenContext = parseIdToken(idToken, providerId);
         } catch (JOSEException | ParseException e) {
             log.error("An unexpected error occurred attempting to parse id_token", e);
             throw new BadCredentialsException("Failed to parse id_token", e);
@@ -202,9 +186,9 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
             throw new BadCredentialsException("Provider not configured", e);
         }
 
-        applyIdTokenClaimGates(providerId, claimsSet);
+        applyIdTokenClaimGates(providerId, tokenContext);
 
-        final Map<String, String> authInfo = claimsSet.getClaims().entrySet().stream()
+        final Map<String, String> authInfo = tokenContext.claims().getClaims().entrySet().stream()
                 .collect(Collectors.toMap(
                         Map.Entry::getKey,
                         e -> e.getValue() != null ? e.getValue().toString() : ""
@@ -226,7 +210,7 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
             throw new BadCredentialsException(e.getMessage(), e);
         }
 
-        if (shouldFilterEmailDomains(providerId) && !isAllowedEmailDomain(user.getEmail(), providerId)) {
+        if (_accountPolicy.shouldFilterEmailDomains(providerId) && !_accountPolicy.isEmailDomainAllowed(user.getEmail(), providerId)) {
             throw new NewAutoAccountNotAutoEnabledException("New OpenID user, email is not on the domain whitelist.", user);
         }
         if (!_plugin.isEnabled(providerId)) {
@@ -238,10 +222,10 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         String requesterUsername = null;
         try {
             requesterUsername = user.getUsername();
-            xdatUser = _userAuthService.getUserDetailsByNameAndAuth(requesterUsername, XdatUserAuthService.OPENID, providerId);
+            xdatUser = _userResolver.resolveExisting(requesterUsername, providerId);
         } catch (UsernameAuthMappingNotFoundException e) {
             if (Boolean.parseBoolean(_plugin.getProperty(providerId, "forceUserCreate"))) {
-                xdatUser = createUserAccount(providerId, user);
+                xdatUser = _userResolver.createUser(providerId, user);
             } else {
                 // Give users an option to register or connect OpenID Account with an XNAT account
                 log.info("User {} attempted to log using authentication provider ID {}, diverting to account merge page.", user.getUsername(), providerId);
@@ -253,7 +237,7 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         if (!xdatUser.isEnabled()) {
             throw new NewAutoAccountNotAutoEnabledException("New OpenID user, needs to to be enabled.", xdatUser);
         }
-        if (getSiteConfigPreferences().getEmailVerification() && !xdatUser.isVerified()) {
+        if (_accountPolicy.isEmailVerificationRequired(xdatUser)) {
             log.info("User {} is not verified, redirecting to verification page.", xdatUser.getUsername());
             String encodedEmail = URLEncoder.encode(xdatUser.getEmail(), StandardCharsets.UTF_8.toString());
             String encodedUsername = URLEncoder.encode(xdatUser.getUsername(), StandardCharsets.UTF_8.toString());
@@ -324,62 +308,24 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         return userMessage;
     }
 
-    private JWTClaimsSet parseIdToken(final String idToken, final String providerId)
+    private TokenContext parseIdToken(final String idToken, final String providerId)
             throws JOSEException, ParseException, NotFoundException {
+        final SignedJWT signedJWT;
         if (isIdTokenEncrypted(idToken)) {
             final EncryptedJWT encryptedJWT = EncryptedJWT.parse(idToken);
             encryptedJWT.decrypt(new RSADecrypter(_keystoreService.getEncryptionPrivateKey(providerId)));
 
+            // The decrypted payload is the inner signed JWT, whose header carries the meaningful typ.
             final String decryptedPayload = encryptedJWT.getPayload().toString();
-            return SignedJWT.parse(decryptedPayload).getJWTClaimsSet();
+            signedJWT = SignedJWT.parse(decryptedPayload);
         } else {
-            return SignedJWT.parse(idToken).getJWTClaimsSet();
+            signedJWT = SignedJWT.parse(idToken);
         }
+        return new TokenContext(signedJWT.getJWTClaimsSet(), signedJWT.getHeader().toJSONObject());
     }
 
     private boolean isIdTokenEncrypted(final String idToken) {
         return idToken.split("\\.").length == 5;
-    }
-
-    private UserI createUserAccount(final String providerId, final OpenIdConnectUserDetails user) throws AuthenticationException {
-        // Use standard XNAT provider attributes (auto.enabled/auto.verified) for consistency with other authentication providers
-        boolean autoEnabled = _plugin.isAutoEnabled(providerId);
-        boolean autoVerified = _plugin.isAutoVerified(providerId);
-
-        UserI xdatUser = Users.createUser();
-        xdatUser.setLogin(sanitizeUsername(user.getUsername()));
-        xdatUser.setFirstname(user.getFirstname());
-        xdatUser.setLastname(user.getLastname());
-        xdatUser.setEmail(user.getEmail());
-        xdatUser.setEnabled(autoEnabled);
-        xdatUser.setVerified(autoVerified);
-
-        log.info("Create user, username: {}", xdatUser.getUsername());
-        try {
-            UserI adminUser = Users.getAdminUser();
-            XdatUserAuth auth = new XdatUserAuth(user.getUsername(), XdatUserAuthService.OPENID, providerId, xdatUser.getLogin(), true, 0);
-            Users.save(xdatUser, adminUser, auth,
-                    false, new EventDetails(EventUtils.CATEGORY.DATA, EventUtils.TYPE.WEB_SERVICE,
-                            "Added User", "Requested by user " + adminUser.getUsername(),
-                            "Created new user " + user.getUsername() + " through OpenID connect."));
-            xdatUser.setAuthorization(auth);
-        } catch (Exception e) {
-            log.error("Failed to create user account for OpenID user {}", user.getUsername(), e);
-            throw new AuthenticationServiceException("Failed to create user account", e);
-        }
-
-        // Send email notifications
-        try {
-            if (!autoVerified) {
-                AdminUtils.sendNewUserVerificationEmail(xdatUser);
-            } else {
-                AdminUtils.sendNewUserNotification(xdatUser, "", "", "", new VelocityContext());
-            }
-        } catch (Exception e) {
-            log.error("Error sending email notification for user {}", xdatUser.getUsername(), e);
-        }
-
-        return xdatUser;
     }
 
     /**
@@ -389,10 +335,10 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
      * to {@link BadCredentialsException}, reusing the existing validation-failure handling. With no
      * gates enabled this is a no-op.
      */
-    void applyIdTokenClaimGates(final String providerId, final JWTClaimsSet claims) {
+    void applyIdTokenClaimGates(final String providerId, final TokenContext token) {
         try {
             for (final ClaimGate gate : _gateFactory.gatesFor(providerId, AuthPath.ID_TOKEN)) {
-                gate.check(claims);
+                gate.check(token);
             }
         } catch (final ClaimGateException e) {
             log.info("OpenID claim gate rejected user for provider '{}': {}", providerId, e.getMessage());
@@ -400,46 +346,6 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         }
     }
 
-    private boolean shouldFilterEmailDomains(final String providerId) {
-        return Boolean.parseBoolean(StringUtils.defaultIfBlank(_plugin.getProperty(providerId, "shouldFilterEmailDomains"), "false"));
-    }
-
-    private List<String> getAllowedEmailDomains(final String providerId) {
-        return shouldFilterEmailDomains(providerId)
-                ? Arrays.stream(_plugin.getProperty(providerId, "allowedEmailDomains").split("\\s*,\\s*"))
-                .map(StringUtils::lowerCase)
-                .collect(Collectors.toList())
-                : ALL_DOMAINS;
-    }
-
-    private boolean isAllowedEmailDomain(final String email, final String providerId) {
-        if (!_allowedDomains.containsKey(providerId)) {
-            return false;
-        }
-        if (!shouldFilterEmailDomains(providerId)) {
-            return true;
-        }
-        final List<String> allowedDomains = _allowedDomains.get(providerId);
-        if (ListUtils.isEqualList(ALL_DOMAINS, allowedDomains)) {
-            return true;
-        }
-        final String[] emailParts = email.split("@");
-        final String domain = emailParts.length >= 2 ? emailParts[1] : null;
-        if (StringUtils.isBlank(domain)) {
-            log.warn("Couldn't parse a domain from the email address {}, returning false", email);
-            return false;
-        }
-        if (allowedDomains.contains(StringUtils.lowerCase(domain))) {
-            log.debug("Matched email {} with allowed domain {} for provider {}", email, _allowedDomains, providerId);
-            return true;
-        }
-        log.debug("Email {} did not match any allowed domains for provider {}: {}", email, providerId, StringUtils.join(_allowedDomains, ", "));
-        return false;
-    }
-
-    protected SiteConfigPreferences getSiteConfigPreferences() {
-        return _siteConfigPreferences;
-    }
 
     private Map<String, String> getUserInfo(final String accessToken, final String userInfoEndpoint) {
         // See https://openid.net/specs/openid-connect-core-1_0.html#UserInfo
@@ -448,24 +354,6 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         headers.set(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken);
         final Map<?, ?> body = _restTemplate.exchange(userInfoEndpoint, HttpMethod.GET, new HttpEntity<>(headers), Map.class).getBody();
         return MapUtils.isEmpty(body) ? Collections.emptyMap() : GenericUtils.convertToTypedMap(body, String.class, String.class);
-    }
-
-    /**
-     * Replace all characters in the submitted username that are not alphanumeric, dash, underscore, apostrophe, or
-     * period with an underscore. This is useful for sanitizing usernames that may have been submitted by users
-     * that do not comply with the {@link Users#isValidUsername(String) required format}.
-     *
-     * @param candidate The proposed username to sanitize.
-     * @return The sanitized username.
-     * @throws IllegalArgumentException If the candidate username can't be sanitized to a valid username, e.g. too long or doesn't start with a letter.
-     */
-    // TODO: This is here to provide compatibility with older versions of XNAT, but eventually should use XNAT's version of this method.
-    private static String sanitizeUsername(final String candidate) {
-        final String transformed = RegExUtils.replaceAll(candidate, "[^a-zA-Z0-9-_'.]", "_");
-        if (!Users.isValidUsername(transformed)) {
-            throw new AuthenticationServiceException("The submitted username '" + candidate + "' does not comply with the required format and cannot be sanitized to a valid username.");
-        }
-        return transformed;
     }
 
     private static class NoopAuthenticationManager implements AuthenticationManager {

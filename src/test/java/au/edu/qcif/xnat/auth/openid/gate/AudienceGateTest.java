@@ -26,7 +26,7 @@ public class AudienceGateTest {
 
     private static void assertPasses(final AudienceGate gate, final JWTClaimsSet claims) {
         try {
-            gate.check(claims);
+            gate.check(TokenContext.of(claims));
         } catch (ClaimGateException e) {
             fail("claims did not pass");
         }
@@ -35,7 +35,7 @@ public class AudienceGateTest {
 
     private static void assertRejects(final AudienceGate gate, final JWTClaimsSet claims) {
         try {
-            gate.check(claims);
+            gate.check(TokenContext.of(claims));
             fail("expected ClaimGateException");
         } catch (ClaimGateException expected) {
             // pass

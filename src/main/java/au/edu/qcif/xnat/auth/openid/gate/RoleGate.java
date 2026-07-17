@@ -1,7 +1,5 @@
 package au.edu.qcif.xnat.auth.openid.gate;
 
-import com.nimbusds.jwt.JWTClaimsSet;
-
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Set;
@@ -22,8 +20,8 @@ final class RoleGate implements ClaimGate {
     }
 
     @Override
-    public void check(final JWTClaimsSet claims) throws ClaimGateException {
-        final Set<String> roles = ClaimPaths.extractRoles(claims, path);
+    public void check(final TokenContext token) throws ClaimGateException {
+        final Set<String> roles = ClaimPaths.extractRoles(token.claims(), path);
         if (Collections.disjoint(roles, requiredRoles)) {
             throw new ClaimGateException("Token roles " + roles + " at " + Arrays.toString(path)
                     + " contain none of the required roles " + requiredRoles);

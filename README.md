@@ -104,10 +104,10 @@ Comma delimted whitelist of domains.
 
 Allows skipping of user creation, usually set to true.
 
-### Claim-validation gates (audience and role)
+### Claim-validation gates (audience, role, and type)
 
-Two optional gates can reject a valid token whose claims do not meet an authorization
-requirement. Both are **opt-in and default off**, and run independently on two paths: the
+Three optional gates can reject a valid token whose claims do not meet an authorization
+requirement. All are **opt-in and default off**, and run independently on two paths: the
 interactive **ID-token** path (`idToken`) and the **bearer-token** path (`bearer`). A rejected user
 is denied — they are not routed to the admin auto-enroll queue.
 
@@ -150,6 +150,93 @@ overriding the shared toggle above for this path. Defaults to the shared toggle,
 
 Enable (or, with `false`, disable) the audience / role gate on the bearer-token path, overriding the
 shared toggle above for this path. Defaults to the shared toggle, otherwise `false`.
+
+#### openid.`providerId`.typCheck.enabled
+
+Enable the type gate. Default `false`. The type gate rejects a token whose `typ` is not one of the
+accepted values, letting you distinguish an access token from an id token and reject one presented on
+the wrong path. Because the gate applies equally to both paths, this shared toggle is the natural
+place to turn it on; a path-scoped `idToken.typCheck.enabled` / `bearer.typCheck.enabled` can still
+override it for one path. The gate reads `typ` from the token **body** claim first
+(e.g. Keycloak `"typ":"Bearer"`/`"ID"`), falling back to the JWT **header** when the body has none
+(e.g. RFC 9068 / IdentityServer `"typ":"at+jwt"` for access tokens, `"JWT"` for id tokens). It only
+works if your provider emits a `typ` that distinguishes the token kinds.
+
+#### openid.`providerId`.bearer.typCheck.expectedTypes / openid.`providerId`.idToken.typCheck.expectedTypes
+
+Comma-delimited list of accepted `typ` values for that path (a case-sensitive any-of test). **Set
+this per path**, because the expected type legitimately differs between the two paths (e.g. bearer
+`at+jwt,Bearer` versus idToken `JWT,ID`). A shared `openid.providerId.typCheck.expectedTypes` is
+supported by the resolution rules but discouraged: a single value would be wrong for at least one
+path. Enabling the gate with no `expectedTypes` for a path rejects every token on it (fail-closed).
+
+### Bearer-token authentication
+
+In addition to the interactive login flow, the plugin can authenticate REST requests that present
+an access token minted by the OpenID provider:
+
+```
+Authorization: Bearer <jwt>
+```
+
+This path is **opt-in per provider** and **off by default**. When enabled, the bearer filter runs
+on every request but is a strict no-op unless an `Authorization: Bearer` header is present, and it
+short-circuits when the request is already authenticated (e.g. a session cookie). A bearer-
+authenticated request is **stateless** — no XNAT session (`JSESSIONID`) is created for it.
+
+Because a bearer token arrives from an untrusted client (unlike the interactive ID token, which
+XNAT receives directly from the token endpoint), it is fully validated: the RSA signature is
+verified against the provider's published keys, and the `iss` and `exp` claims are checked. Only
+the `RS256`/`RS384`/`RS512` algorithms are accepted.
+
+Once the token is validated, a bearer caller is held to the **same account policy as an interactive
+login** for that provider: the per-provider email-domain whitelist
+(`openid.providerId.shouldFilterEmailDomains` / `allowedEmailDomains`) and the site-wide email
+verification requirement both apply. The interactive path redirects the browser when these fail; the
+REST path can only return **403**.
+
+**Status codes:**
+
+| Condition | Status |
+|-----------|--------|
+| Token invalid, expired, wrong/unknown issuer, or unverifiable | **401 Unauthorized** |
+| Token valid but fails a `bearer.*` claim gate (including the audience gate, on by default) | **403 Forbidden** |
+| Token valid but the identity's email domain is not on the whitelist | **403 Forbidden** |
+| Token valid but no XNAT account is mapped (and auto-create is off) | **403 Forbidden** |
+| Token valid but the account is disabled, unverified (when site requires verification), or locked | **403 Forbidden** |
+
+A bearer caller resolves to the same XNAT user that a prior interactive login would create for that
+identity (both derive `auth_user` from the same `usernamePattern`).
+
+> **Audience gate is on by default for the bearer path.** On the bearer path the `aud` claim is the
+> confinement boundary that stops a token minted for another client from being replayed against XNAT,
+> so `openid.providerId.bearer.audCheck.enabled` **defaults to `true`** (the interactive path stays
+> off by default). You must configure `openid.providerId.audCheck.acceptedAudiences` to the
+> audience(s) XNAT should accept — **until you do, every bearer token is rejected with 403**
+> (fail-closed; a startup warning is logged). To turn the check off (not recommended), set
+> `openid.providerId.bearer.audCheck.enabled=false`.
+
+#### openid.`providerId`.bearer.enabled
+
+Master switch for the bearer-token path for this provider. Default `false`. When `true`, both
+`openid.providerId.issuer` and `openid.providerId.jwksUri` must also be configured (a provider
+missing either is excluded from the bearer path and logged at error level — fail-closed).
+
+#### openid.`providerId`.issuer
+
+The exact `iss` value expected in bearer tokens from this provider. Also used to route an inbound
+token to the right provider. Required when `bearer.enabled` is `true`.
+
+#### openid.`providerId`.jwksUri
+
+The provider's JWKS (JSON Web Key Set) endpoint. Its public keys verify the bearer token signature;
+the key set is cached and re-fetched on key rotation. Required when `bearer.enabled` is `true`.
+
+#### openid.`providerId`.bearer.forceUserCreate
+
+Whether to auto-create an XNAT account for a validated bearer-token identity that has no existing
+mapping. If unset, falls back to the shared `openid.providerId.forceUserCreate`. When neither is
+`true`, an unmapped identity is denied with 403.
 
 ### auto.enabled
 

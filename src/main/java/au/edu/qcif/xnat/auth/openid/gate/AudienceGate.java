@@ -1,7 +1,5 @@
 package au.edu.qcif.xnat.auth.openid.gate;
 
-import com.nimbusds.jwt.JWTClaimsSet;
-
 import java.util.Collections;
 import java.util.List;
 import java.util.Set;
@@ -21,8 +19,8 @@ final class AudienceGate implements ClaimGate {
     }
 
     @Override
-    public void check(final JWTClaimsSet claims) throws ClaimGateException {
-        final List<String> aud = claims.getAudience();
+    public void check(final TokenContext token) throws ClaimGateException {
+        final List<String> aud = token.claims().getAudience();
         if (aud == null || Collections.disjoint(aud, acceptedAudiences)) {
             throw new ClaimGateException(
                     "Token audience " + aud + " does not contain any accepted audience " + acceptedAudiences);
