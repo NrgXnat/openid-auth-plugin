@@ -28,6 +28,10 @@ import org.springframework.security.web.authentication.AuthenticationSuccessHand
 import org.springframework.security.web.authentication.session.SessionAuthenticationStrategy;
 import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
+import au.edu.qcif.xnat.auth.openid.utils.OpenIdUtils;
+import org.nrg.xnat.security.OnXnatLogin;
+import org.springframework.beans.factory.annotation.Qualifier;
+import java.util.Optional;
 
 import java.io.IOException;
 import java.nio.file.Paths;
@@ -141,10 +145,13 @@ public class OpenIdConnectFilterTestConfig {
     }
 
     @Bean
-    public OpenIdConnectFilter openIdConnectFilter(final SiteConfigPreferences siteConfigPreferences,
+    public OpenIdConnectFilter openIdConnectFilter(
+            @Qualifier("onXnatLogin")  OnXnatLogin onXnatLogin,
+            @Qualifier(OpenIdUtils.ALTERNATE_SUCCESS_HANDLER) Optional<AuthenticationSuccessHandler> oidcSuccessHandler,
+            final SiteConfigPreferences siteConfigPreferences,
                                                    final KeystoreService keystoreService,
                                                    final OpenIdAuthPlugin openIdAuthPlugin,
                                                    final AuthenticationEventPublisher authenticationEventPublisher) {
-        return new OpenIdConnectFilter(openIdAuthPlugin, authenticationEventPublisher, userAuthService(), siteConfigPreferences, keystoreService);
+        return new OpenIdConnectFilter(oidcSuccessHandler, openIdAuthPlugin, authenticationEventPublisher, userAuthService(), siteConfigPreferences, keystoreService);
     }
 }

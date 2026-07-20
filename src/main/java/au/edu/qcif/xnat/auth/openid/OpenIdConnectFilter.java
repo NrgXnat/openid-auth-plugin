@@ -74,6 +74,11 @@ import java.text.ParseException;
 import java.util.Collections;
 import java.util.Map;
 import java.util.stream.Collectors;
+import au.edu.qcif.xnat.auth.openid.utils.OpenIdUtils;
+import org.nrg.xdat.XDAT;
+import org.nrg.xnat.security.OnXnatLogin;
+import org.springframework.beans.factory.annotation.Qualifier;
+import java.util.Optional;
 
 /**
  * Main Spring Security authentication filter.
@@ -101,14 +106,19 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
     private OAuth2RestTemplate _restTemplate;
 
     private static final String DEFAULT_REDIRECT_URI = "/openid/callback";
+    private static final String USER_INFO_URI = "userInfoUri";
 
-    public OpenIdConnectFilter(final OpenIdAuthPlugin plugin,
+    public OpenIdConnectFilter(@Qualifier(OpenIdUtils.ALTERNATE_SUCCESS_HANDLER) Optional<AuthenticationSuccessHandler> oidcSuccessHandler,
+                               final OpenIdAuthPlugin plugin,
                                final AuthenticationEventPublisher eventPublisher,
                                final XdatUserAuthService userAuthService,
                                final SiteConfigPreferences siteConfigPreferences,
                                final KeystoreService keystoreService) {
-        super(plugin.getRedirectUri());
-        log.debug("Creating filter for URL {}", plugin.getRedirectUri());
+        super(StringUtils.defaultIfBlank(plugin.getProps().getProperty(PRE_ESTABLISHED_REDIRECT_URI_PROPERTY), DEFAULT_REDIRECT_URI));
+        OnXnatLogin onXnatLogin = XDAT.getContextService().getBean(OnXnatLogin.class);
+        super.setAuthenticationSuccessHandler(oidcSuccessHandler.orElse(onXnatLogin));
+
+        log.debug("Creating filter for URL {}", StringUtils.defaultIfBlank(plugin.getProps().getProperty(PRE_ESTABLISHED_REDIRECT_URI_PROPERTY), DEFAULT_REDIRECT_URI));
         setAuthenticationManager(new NoopAuthenticationManager());
         _plugin = plugin;
         _eventPublisher = eventPublisher;
@@ -118,11 +128,6 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         _accountPolicy = new OpenIdAccountPolicy(plugin, siteConfigPreferences);
     }
 
-    @Autowired
-    @Override
-    public void setAuthenticationSuccessHandler(final AuthenticationSuccessHandler handler) {
-        super.setAuthenticationSuccessHandler(handler);
-    }
 
     @Autowired
     @Override
@@ -188,17 +193,17 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
 
         applyIdTokenClaimGates(providerId, tokenContext);
 
-        final Map<String, String> authInfo = tokenContext.claims().getClaims().entrySet().stream()
+        final Map<String, Object> authInfo = tokenContext.claims().getClaims().entrySet().stream()
                 .collect(Collectors.toMap(
                         Map.Entry::getKey,
-                        e -> e.getValue() != null ? e.getValue().toString() : ""
+                        e -> e.getValue() != null ? e.getValue() : ""
                 ));
 
         log.debug("===== : {}", authInfo);
-        final String userInfoUri = _plugin.getProperty(providerId, "userInfoUri");
+        final String userInfoUri = _plugin.getProperty(providerId, USER_INFO_URI);
 
         if (!StringUtils.isEmpty(userInfoUri)) {
-            Map<String, String> userInfo = getUserInfo(accessToken.getValue(), userInfoUri);
+            Map<String, Object> userInfo = getUserInfo(accessToken.getValue(), userInfoUri);
             authInfo.putAll(userInfo);
         }
 
@@ -250,7 +255,7 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         }
 
         if (requesterUsername != null) {
-            Authentication authentication = new OpenIdAuthToken(xdatUser, providerId);
+            Authentication authentication = new OpenIdAuthToken(xdatUser, providerId, authInfo);
 
             Authentication authRequestToken = new OpenIdAuthRequestToken(requesterUsername, providerId);
             _eventPublisher.publishAuthenticationSuccess(authRequestToken);
@@ -347,13 +352,13 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
     }
 
 
-    private Map<String, String> getUserInfo(final String accessToken, final String userInfoEndpoint) {
+    private Map<String, Object> getUserInfo(final String accessToken, final String userInfoEndpoint) {
         // See https://openid.net/specs/openid-connect-core-1_0.html#UserInfo
         final HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
         headers.set(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken);
         final Map<?, ?> body = _restTemplate.exchange(userInfoEndpoint, HttpMethod.GET, new HttpEntity<>(headers), Map.class).getBody();
-        return MapUtils.isEmpty(body) ? Collections.emptyMap() : GenericUtils.convertToTypedMap(body, String.class, String.class);
+        return MapUtils.isEmpty(body) ? Collections.emptyMap() : GenericUtils.convertToTypedMap(body, String.class, Object.class);
     }
 
     private static class NoopAuthenticationManager implements AuthenticationManager {
