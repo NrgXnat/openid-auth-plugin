@@ -21,6 +21,7 @@ import org.nrg.xft.security.UserI;
 import org.nrg.xnat.security.tokens.AbstractXnatAuthenticationToken;
 import org.springframework.security.core.SpringSecurityCoreVersion;
 
+import javax.annotation.Nullable;
 import java.util.Map;
 
 /**
@@ -40,6 +41,7 @@ public class OpenIdAuthToken extends AbstractXnatAuthenticationToken {
 		this.openIdUserInfo = openIdUserInfo;
 	}
 
+	@Nullable
 	public Map<String, Object> getOpenIdUserInfo() {
 		return openIdUserInfo;
 	}

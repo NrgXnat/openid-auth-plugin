@@ -396,7 +396,7 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter {
 
     /** Flattens the validated claims and resolves the username via the provider's usernamePattern. */
     private OpenIdConnectUserDetails buildUserDetails(final String providerId, final JWTClaimsSet claims) {
-        final Map<String, String> authInfo = claims.getClaims().entrySet().stream()
+        final Map<String, Object> authInfo = claims.getClaims().entrySet().stream()
                 .collect(Collectors.toMap(
                         Map.Entry::getKey,
                         e -> e.getValue() != null ? e.getValue().toString() : ""));

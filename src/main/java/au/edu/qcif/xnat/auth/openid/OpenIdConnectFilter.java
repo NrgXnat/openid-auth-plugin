@@ -114,11 +114,11 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
                                final XdatUserAuthService userAuthService,
                                final SiteConfigPreferences siteConfigPreferences,
                                final KeystoreService keystoreService) {
-        super(StringUtils.defaultIfBlank(plugin.getProps().getProperty(PRE_ESTABLISHED_REDIRECT_URI_PROPERTY), DEFAULT_REDIRECT_URI));
+        super(plugin.getRedirectUri());
         OnXnatLogin onXnatLogin = XDAT.getContextService().getBean(OnXnatLogin.class);
         super.setAuthenticationSuccessHandler(oidcSuccessHandler.orElse(onXnatLogin));
 
-        log.debug("Creating filter for URL {}", StringUtils.defaultIfBlank(plugin.getProps().getProperty(PRE_ESTABLISHED_REDIRECT_URI_PROPERTY), DEFAULT_REDIRECT_URI));
+        log.debug("Creating filter for URL {}", plugin.getRedirectUri());
         setAuthenticationManager(new NoopAuthenticationManager());
         _plugin = plugin;
         _eventPublisher = eventPublisher;
