@@ -91,6 +91,16 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
      */
     public static final String OPENID_ERROR_MESSAGE = "openIdErrorMessage";
 
+    /**
+     * Cookie set by the login-screen extension when an auto-login (prompt=none) redirect is issued. Acts as a
+     * short-lived, one-shot guard: while it is present the login page renders normally instead of re-issuing
+     * the auto-login redirect, so a signed-out visitor is not caught in a redirect loop. It is a cookie rather
+     * than an {@code HttpSession} attribute because the guard must survive the
+     * {@code Login.vm -> /openid-login -> provider -> callback} redirect chain, across which the session does
+     * not reliably persist (the Turbine login page and the Spring filter can observe different sessions).
+     */
+    public static final String AUTO_LOGIN_ATTEMPTED_COOKIE = "OPENID_AUTOLOGIN_TRIED";
+
     private final OpenIdAuthPlugin _plugin;
     private final AuthenticationEventPublisher _eventPublisher;
     private final KeystoreService _keystoreService;
@@ -144,6 +154,14 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
     @Override
     public Authentication attemptAuthentication(HttpServletRequest request, HttpServletResponse response) throws AuthenticationException, IOException {
         log.debug("Executed attemptAuthentication...");
+
+        // An OAuth error returned to the redirect URI (e.g. ?error=login_required) carries no code to
+        // exchange; handle it up front so a failed auto-login (prompt=none) attempt falls back to the login
+        // page quietly instead of being run through — and mangled by — the token-exchange path.
+        final String authorizationError = request.getParameter("error");
+        if (StringUtils.isNotBlank(authorizationError)) {
+            return handleAuthorizationError(response, authorizationError);
+        }
 
         HttpSession session = request.getSession(false);
         if (session != null) {
@@ -306,6 +324,36 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
             userMessage = "OpenID Connect login failed. Please try again or contact your administrator if the problem persists.";
         }
         return userMessage;
+    }
+
+    /**
+     * Handles an OAuth error returned to the redirect URI. An auto-login (prompt=none) attempt that finds no
+     * session to reuse comes back with an "interaction required" error (login_required and friends); that is an
+     * expected negative result, so we quietly return to the login page. The login-screen extension's short-lived
+     * {@link #AUTO_LOGIN_ATTEMPTED_COOKIE} guard, set when the redirect was issued, stops the page from
+     * immediately re-issuing the auto-login redirect and looping. Any other error is treated as a genuine failure.
+     *
+     * <p>The decision keys off the OIDC error code alone: the interaction-required codes are returned only in
+     * response to a {@code prompt=none} request, which only the auto-login flow issues. It deliberately does not
+     * consult server-side session state, which does not reliably survive the redirect chain (see
+     * {@link #AUTO_LOGIN_ATTEMPTED_COOKIE}).</p>
+     */
+    private Authentication handleAuthorizationError(final HttpServletResponse response, final String error) throws IOException {
+        if (isInteractionRequiredError(error)) {
+            log.debug("OpenID auto-login returned '{}'; showing the login page.", error);
+            response.sendRedirect(TurbineUtils.GetFullServerPath() + "/app/template/Login.vm");
+            return null;
+        }
+        log.info("OpenID provider returned an authorization error: {}", error);
+        throw new BadCredentialsException("OpenID provider returned error: " + error);
+    }
+
+    /** The OIDC error codes that mean the user would have had to interact, i.e. there was no existing session to reuse. */
+    static boolean isInteractionRequiredError(final String error) {
+        return "login_required".equals(error)
+                || "interaction_required".equals(error)
+                || "consent_required".equals(error)
+                || "account_selection_required".equals(error);
     }
 
     private TokenContext parseIdToken(final String idToken, final String providerId)

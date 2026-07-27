@@ -53,6 +53,7 @@ import java.util.Properties;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.AUTO_LOGIN;
 import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.DEFAULT_REDIR_URI;
 import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.KEY_REDIR_URI;
 import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.PKCE_ENABLED;
@@ -148,6 +149,28 @@ public class OpenIdAuthPlugin {
 
     public List<String> getEnabledProviders() {
         return _openIdProviders;
+    }
+
+    /**
+     * Returns the id of the enabled provider that opts into auto-login on the login page
+     * ({@code openid.<providerId>.autoLogin=true}), or {@code null} if none do. Auto-login can only
+     * target a single identity provider, so if more than one opts in the first enabled one is used and a
+     * warning is logged.
+     *
+     * @return the auto-login provider id, or {@code null} if the feature is not enabled for any provider.
+     */
+    public String getAutoLoginProviderId() {
+        final List<String> autoLoginProviders = _openIdProviders.stream()
+                .filter(providerId -> Boolean.parseBoolean(getProperty(providerId, AUTO_LOGIN)))
+                .collect(Collectors.toList());
+        if (autoLoginProviders.isEmpty()) {
+            return null;
+        }
+        if (autoLoginProviders.size() > 1) {
+            log.warn("More than one provider has {} enabled ({}); using '{}' for auto-login.",
+                    AUTO_LOGIN, autoLoginProviders, autoLoginProviders.get(0));
+        }
+        return autoLoginProviders.get(0);
     }
 
     @Bean

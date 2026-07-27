@@ -13,6 +13,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.Arrays;
 import java.util.Base64;
+import java.util.Collections;
 import java.util.Map;
 
 import static org.junit.Assert.*;
@@ -185,5 +186,26 @@ public class PkceAuthorizationCodeAccessTokenProviderTest {
         } catch (InvalidRequestException expected) {
             assertTrue(expected.getMessage().toLowerCase().contains("csrf"));
         }
+    }
+
+    @Test
+    public void forwardsPromptParameterToAuthorizationRequest() {
+        // A prompt=none hint on the incoming request (auto-login) is passed through to the provider.
+        final DefaultAccessTokenRequest request = new DefaultAccessTokenRequest(
+                Collections.singletonMap("prompt", new String[]{"none"}));
+
+        final UserRedirectRequiredException redirect = triggerAuthorizationRedirect(provider(), resource(true), request);
+
+        assertEquals("none", redirect.getRequestParams().get("prompt"));
+    }
+
+    @Test
+    public void omitsPromptParameterWhenNotRequested() {
+        final DefaultAccessTokenRequest request = new DefaultAccessTokenRequest();
+
+        final UserRedirectRequiredException redirect = triggerAuthorizationRedirect(provider(), resource(true), request);
+
+        assertFalse("prompt must not be sent unless explicitly requested",
+                redirect.getRequestParams().containsKey("prompt"));
     }
 }
