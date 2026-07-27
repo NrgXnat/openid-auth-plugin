@@ -3,6 +3,7 @@ package au.edu.qcif.xnat.auth.openid;
 import au.edu.qcif.xnat.auth.openid.service.KeystoreService;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnitRunner;
 import org.nrg.xdat.preferences.SiteConfigPreferences;
@@ -13,6 +14,7 @@ import org.springframework.security.authentication.CredentialsExpiredException;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.web.authentication.AuthenticationSuccessHandler;
 
+import javax.servlet.http.Cookie;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import java.lang.reflect.Method;
@@ -21,8 +23,11 @@ import java.util.Map;
 import java.util.Optional;
 
 import static org.junit.Assert.*;
+import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -138,5 +143,31 @@ public class OpenIdConnectFilterLogicTest {
         // A non-interaction-required error (e.g. access_denied) is a genuine credential failure, not an
         // expected auto-login fallback, so it surfaces as an exception.
         filter.attemptAuthentication(request, response);
+    }
+
+    @Test
+    public void clearsAutoLoginSuppressionCookieWhenPresent() {
+        final HttpServletRequest request = mock(HttpServletRequest.class);
+        final HttpServletResponse response = mock(HttpServletResponse.class);
+        when(request.getCookies()).thenReturn(new Cookie[]{new Cookie(OpenIdConnectFilter.AUTO_LOGIN_SUPPRESS_COOKIE, "1")});
+        when(request.isSecure()).thenReturn(true);
+
+        OpenIdConnectFilter.clearAutoLoginSuppressionCookie(request, response);
+
+        final ArgumentCaptor<Cookie> captor = ArgumentCaptor.forClass(Cookie.class);
+        verify(response).addCookie(captor.capture());
+        assertEquals(OpenIdConnectFilter.AUTO_LOGIN_SUPPRESS_COOKIE, captor.getValue().getName());
+        assertEquals("expiring the cookie", 0, captor.getValue().getMaxAge());
+    }
+
+    @Test
+    public void clearAutoLoginSuppressionCookieIsNoOpWhenAbsent() {
+        final HttpServletRequest request = mock(HttpServletRequest.class);
+        final HttpServletResponse response = mock(HttpServletResponse.class);
+        when(request.getCookies()).thenReturn(null);
+
+        OpenIdConnectFilter.clearAutoLoginSuppressionCookie(request, response);
+
+        verify(response, never()).addCookie(any());
     }
 }

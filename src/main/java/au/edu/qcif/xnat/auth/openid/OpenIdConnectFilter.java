@@ -64,6 +64,7 @@ import org.springframework.security.web.authentication.session.SessionAuthentica
 import org.springframework.stereotype.Component;
 
 import javax.servlet.ServletException;
+import javax.servlet.http.Cookie;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import javax.servlet.http.HttpSession;
@@ -79,6 +80,8 @@ import org.nrg.xdat.XDAT;
 import org.nrg.xnat.security.OnXnatLogin;
 import org.springframework.beans.factory.annotation.Qualifier;
 import java.util.Optional;
+
+import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.LOGOUT_URI;
 
 /**
  * Main Spring Security authentication filter.
@@ -105,6 +108,20 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
      * not reliably persist (the Turbine login page and the Spring filter can observe different sessions).
      */
     public static final String AUTO_LOGIN_ATTEMPTED_COOKIE = "OPENID_AUTOLOGIN_TRIED";
+
+    /**
+     * Cookie set on logout to suppress auto-login until the user next signs in explicitly, so that
+     * clicking "log out" does not immediately trigger a {@code prompt=none} re-login while the provider
+     * session is still alive. Written by the logout handler, read by the login-screen extension, and cleared
+     * here on a successful interactive login.
+     */
+    public static final String AUTO_LOGIN_SUPPRESS_COOKIE = "OPENID_NO_AUTOLOGIN";
+
+    /**
+     * Session attribute holding the raw id_token from the interactive login, so it can be sent as the
+     * {@code id_token_hint} on an RP-initiated logout. Server-side only (never sent to the browser).
+     */
+    public static final String ID_TOKEN_SESSION_ATTR = "openIdIdToken";
 
     private final OpenIdAuthPlugin _plugin;
     private final AuthenticationEventPublisher _eventPublisher;
@@ -279,6 +296,12 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
             org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(authRequestToken);
             AccessLogger.LogServiceAccess(xdatUser.getUsername(), request, "Authentication", "SUCCESS");
             UserHelper.setUserHelper(request, user);
+            clearAutoLoginSuppressionCookie(request, response);
+            // Keep the id_token for unified logout's id_token_hint, but only when an end-session URL is
+            // configured for this provider -- no point storing it (or the PII it carries) otherwise.
+            if (StringUtils.isNotBlank(_plugin.getProperty(providerId, LOGOUT_URI))) {
+                request.getSession().setAttribute(ID_TOKEN_SESSION_ATTR, idToken);
+            }
 
             return authentication;
         }
@@ -357,6 +380,27 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
                 || "interaction_required".equals(error)
                 || "consent_required".equals(error)
                 || "account_selection_required".equals(error);
+    }
+
+    /**
+     * Clears the {@link #AUTO_LOGIN_SUPPRESS_COOKIE} once the user has signed in explicitly, re-arming
+     * auto-login for a future session. No-op when the cookie is not present on the request.
+     */
+    static void clearAutoLoginSuppressionCookie(final HttpServletRequest request, final HttpServletResponse response) {
+        if (request.getCookies() == null) {
+            return;
+        }
+        for (final Cookie cookie : request.getCookies()) {
+            if (AUTO_LOGIN_SUPPRESS_COOKIE.equals(cookie.getName())) {
+                final Cookie cleared = new Cookie(AUTO_LOGIN_SUPPRESS_COOKIE, "");
+                cleared.setPath("/");
+                cleared.setMaxAge(0);
+                cleared.setHttpOnly(true);
+                cleared.setSecure(request.isSecure());
+                response.addCookie(cleared);
+                return;
+            }
+        }
     }
 
     private TokenContext parseIdToken(final String idToken, final String providerId)

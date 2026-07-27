@@ -1,6 +1,7 @@
 package org.nrg.xnat.extensions.screens.Login;
 
 import static au.edu.qcif.xnat.auth.openid.OpenIdConnectFilter.AUTO_LOGIN_ATTEMPTED_COOKIE;
+import static au.edu.qcif.xnat.auth.openid.OpenIdConnectFilter.AUTO_LOGIN_SUPPRESS_COOKIE;
 import static au.edu.qcif.xnat.auth.openid.OpenIdConnectFilter.OPENID_ERROR_MESSAGE;
 
 import au.edu.qcif.xnat.auth.openid.OpenIdAuthPlugin;
@@ -112,6 +113,10 @@ public class OpenIdLoginExtension implements Reflection.InjectableI {
         if (hasAutoLoginAttemptCookie(data)) {
             return;
         }
+        // Respect a recent logout: don't re-login until the user signs in again explicitly.
+        if (hasAutoLoginSuppressionCookie(data)) {
+            return;
+        }
         final String providerId = plugin == null ? null : plugin.getAutoLoginProviderId();
         if (StringUtils.isBlank(providerId)) {
             return;
@@ -127,6 +132,11 @@ public class OpenIdLoginExtension implements Reflection.InjectableI {
     /** True if the one-shot auto-login guard cookie is present on the request. */
     private static boolean hasAutoLoginAttemptCookie(final RunData data) {
         return hasNamedCookie(data, AUTO_LOGIN_ATTEMPTED_COOKIE);
+    }
+
+    /** True if the logout suppression cookie is present, meaning auto-login should stay off for now. */
+    private static boolean hasAutoLoginSuppressionCookie(final RunData data) {
+        return hasNamedCookie(data, AUTO_LOGIN_SUPPRESS_COOKIE);
     }
 
     private static boolean hasNamedCookie(final RunData data, final String name) {
