@@ -18,6 +18,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Optional;
 
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
@@ -47,7 +48,7 @@ public class OpenIdConnectFilterClaimGateTest {
         lenient().when(plugin.getRedirectUri()).thenReturn("/openid/callback");
         lenient().when(plugin.getEnabledProviders()).thenReturn(Collections.singletonList(PROVIDER));
         providerProps.forEach((key, value) -> lenient().when(plugin.getProperty(PROVIDER, key)).thenReturn(value));
-        return new OpenIdConnectFilter(plugin, eventPublisher, userAuthService, siteConfigPreferences, keystoreService);
+        return new OpenIdConnectFilter(Optional.empty(),plugin, eventPublisher, userAuthService, siteConfigPreferences, keystoreService);
     }
 
     private static void applyIdTokenClaimGates(final OpenIdConnectFilter filter, final String providerId,

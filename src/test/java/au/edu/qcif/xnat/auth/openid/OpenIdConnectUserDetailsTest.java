@@ -27,7 +27,7 @@ public class OpenIdConnectUserDetailsTest {
     @Mock
     private OpenIdAuthPlugin plugin;
 
-    private Map<String, String> userInfo;
+    private Map<String, Object> userInfo;
 
     @Before
     public void setUp() {
