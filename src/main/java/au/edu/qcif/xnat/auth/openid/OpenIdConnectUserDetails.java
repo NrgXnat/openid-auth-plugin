@@ -136,7 +136,7 @@ public class OpenIdConnectUserDetails extends XDATUser {
         for (final String key : pairs.keySet()) {
             final String fieldName = pairs.get(key);
             final String fieldValue = getFieldValue(fieldName);
-            if (StringUtils.isBlank(fieldValue)) {
+            if (StringUtils.isBlank(fieldValue) || "null".equals(fieldValue)) {
                 throw new IllegalArgumentException(
                     "Cannot resolve username pattern '" + pattern + "': the claim or field '" + fieldName +
                     "' was not found or blank in the OpenID response. Available claims: " +
