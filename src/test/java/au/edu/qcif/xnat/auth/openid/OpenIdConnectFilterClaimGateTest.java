@@ -12,7 +12,6 @@ import org.nrg.xdat.services.XdatUserAuthService;
 import org.springframework.security.authentication.AuthenticationEventPublisher;
 import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.web.authentication.AuthenticationSuccessHandler;
-import org.springframework.security.web.authentication.SimpleUrlAuthenticationSuccessHandler;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;

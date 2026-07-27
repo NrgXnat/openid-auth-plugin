@@ -11,6 +11,7 @@ import org.springframework.security.authentication.AuthenticationEventPublisher;
 import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.authentication.CredentialsExpiredException;
 import org.springframework.security.core.AuthenticationException;
+import org.springframework.security.web.authentication.AuthenticationSuccessHandler;
 
 import java.lang.reflect.Method;
 import java.util.Collections;
@@ -19,6 +20,7 @@ import java.util.Optional;
 
 import static org.junit.Assert.*;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
@@ -53,7 +55,7 @@ public class OpenIdConnectFilterLogicTest {
         lenient().when(plugin.getRedirectUri()).thenReturn("/openid/callback");
         lenient().when(plugin.getEnabledProviders()).thenReturn(Collections.singletonList(PROVIDER));
         providerProps.forEach((key, value) -> lenient().when(plugin.getProperty(PROVIDER, key)).thenReturn(value));
-        return new OpenIdConnectFilter(Optional.empty(),plugin, eventPublisher, userAuthService, siteConfigPreferences, keystoreService);
+        return new OpenIdConnectFilter(Optional.of(mock(AuthenticationSuccessHandler.class)),plugin, eventPublisher, userAuthService, siteConfigPreferences, keystoreService);
     }
 
     private static boolean isIdTokenEncrypted(final OpenIdConnectFilter filter, final String idToken) throws Exception {
