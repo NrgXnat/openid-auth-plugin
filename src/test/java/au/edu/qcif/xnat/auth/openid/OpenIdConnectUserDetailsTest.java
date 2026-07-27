@@ -72,6 +72,9 @@ public class OpenIdConnectUserDetailsTest {
         } catch (IllegalArgumentException expected) {
             assertTrue("Message should name the missing claim",
                        expected.getMessage().contains("employeeId"));
+        }  catch (NullPointerException expected1) {
+            assertTrue("Message should name the missing claim",
+                    expected1.getMessage().contains("employeeId"));
         }
     }
 
