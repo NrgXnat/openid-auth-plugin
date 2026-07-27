@@ -11,6 +11,7 @@ import org.nrg.xdat.preferences.SiteConfigPreferences;
 import org.nrg.xdat.services.XdatUserAuthService;
 import org.springframework.security.authentication.AuthenticationEventPublisher;
 import org.springframework.security.authentication.BadCredentialsException;
+import org.springframework.security.web.authentication.SimpleUrlAuthenticationSuccessHandler;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -48,7 +49,7 @@ public class OpenIdConnectFilterClaimGateTest {
         lenient().when(plugin.getRedirectUri()).thenReturn("/openid/callback");
         lenient().when(plugin.getEnabledProviders()).thenReturn(Collections.singletonList(PROVIDER));
         providerProps.forEach((key, value) -> lenient().when(plugin.getProperty(PROVIDER, key)).thenReturn(value));
-        return new OpenIdConnectFilter(Optional.empty(),plugin, eventPublisher, userAuthService, siteConfigPreferences, keystoreService);
+        return new OpenIdConnectFilter(Optional.of(new SimpleUrlAuthenticationSuccessHandler()),plugin, eventPublisher, userAuthService, siteConfigPreferences, keystoreService);
     }
 
     private static void applyIdTokenClaimGates(final OpenIdConnectFilter filter, final String providerId,
