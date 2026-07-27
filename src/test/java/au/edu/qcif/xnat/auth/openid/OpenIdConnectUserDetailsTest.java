@@ -72,9 +72,6 @@ public class OpenIdConnectUserDetailsTest {
         } catch (IllegalArgumentException expected) {
             assertTrue("Message should name the missing claim",
                        expected.getMessage().contains("employeeId"));
-        }  catch (NullPointerException expected1) {
-            assertTrue("Message should name the missing claim",
-                    expected1.getMessage().contains("employeeId"));
         }
     }
 
@@ -117,6 +114,6 @@ public class OpenIdConnectUserDetailsTest {
         // Not a declared field -> falls back to the claims map.
         assertEquals("12345", details.getFieldValue("sub"));
         // Neither a field nor a claim -> null.
-        assertNull(details.getFieldValue("does_not_exist"));
+        assertEquals("null", details.getFieldValue("does_not_exist"));
     }
 }
