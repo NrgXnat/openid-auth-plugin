@@ -14,4 +14,5 @@ public class OpenIdAuthConstant {
     public static final byte[] CHUNK_SEPARATOR   = {'\r', '\n'};
     public static final String ISSUER = "issuer";
     public static final String JWKS_URI = "jwksUri";
+    public static final String AUTO_LOGIN = "autoLogin";
 }

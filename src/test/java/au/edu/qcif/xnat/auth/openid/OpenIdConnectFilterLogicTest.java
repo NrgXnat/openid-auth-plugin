@@ -13,6 +13,8 @@ import org.springframework.security.authentication.CredentialsExpiredException;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.web.authentication.AuthenticationSuccessHandler;
 
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
 import java.lang.reflect.Method;
 import java.util.Collections;
 import java.util.Map;
@@ -111,5 +113,30 @@ public class OpenIdConnectFilterLogicTest {
 
         // A signed JWT (JWS) has three dot-separated parts.
         assertFalse(isIdTokenEncrypted(filter, "header.payload.signature"));
+    }
+
+    // ---- auto-login error handling -------------------------------------------------------------
+
+    @Test
+    public void interactionRequiredErrorsAreRecognised() {
+        assertTrue(OpenIdConnectFilter.isInteractionRequiredError("login_required"));
+        assertTrue(OpenIdConnectFilter.isInteractionRequiredError("interaction_required"));
+        assertTrue(OpenIdConnectFilter.isInteractionRequiredError("consent_required"));
+        assertTrue(OpenIdConnectFilter.isInteractionRequiredError("account_selection_required"));
+        assertFalse(OpenIdConnectFilter.isInteractionRequiredError("access_denied"));
+        assertFalse(OpenIdConnectFilter.isInteractionRequiredError(null));
+        assertFalse(OpenIdConnectFilter.isInteractionRequiredError(""));
+    }
+
+    @Test(expected = BadCredentialsException.class)
+    public void nonInteractionRequiredErrorIsTreatedAsFailure() throws Exception {
+        final OpenIdConnectFilter filter = filterWith(Collections.emptyMap());
+        final HttpServletRequest request = mock(HttpServletRequest.class);
+        final HttpServletResponse response = mock(HttpServletResponse.class);
+        when(request.getParameter("error")).thenReturn("access_denied");
+
+        // A non-interaction-required error (e.g. access_denied) is a genuine credential failure, not an
+        // expected auto-login fallback, so it surfaces as an exception.
+        filter.attemptAuthentication(request, response);
     }
 }

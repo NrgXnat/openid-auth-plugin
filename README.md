@@ -92,6 +92,14 @@ Controls the scopes returned by the server: `openid,profile,email`
 
 Controls the link HTML snippet displayed on the Login page for this provider. Location of the link text can optionally be customised by modifying `Login.vm`.
 
+### openid.`providerId`.autoLogin
+
+When set to `true`, an unauthenticated visitor to the XNAT login page is automatically sent into this provider's OpenID flow using OIDC `prompt=none`, skipping the "Sign in with …" button. If the visitor already has a session at the provider they are logged straight into XNAT; if not, the provider reports that interaction is required and XNAT quietly shows the normal login page. Defaults to `false`.
+
+The automatic attempt is guarded by a short-lived cookie (about two minutes) so a signed-out visitor is not caught in a redirect loop; once it expires a later visit will try again — which also means a visitor who has since signed in to the provider gets picked up. Only anonymous visitors are redirected, and the provider must support `prompt=none`.
+
+Multiple OpenID providers can be configured on the same XNAT alongside this feature; their normal "Sign in with …" links still appear whenever the automatic attempt does not sign the visitor straight in. Only one provider may enable `autoLogin`, though — if more than one does, the first is used and a warning is logged. Because a visitor who already has a session at the auto-login provider is signed in through it before the login page is shown, `autoLogin` is best suited to a deployment with a single primary identity provider.
+
 ### openid.`providerId`.shouldFilterEmailDomains
 
 Controls whether domains of the email should be compared against the whitelist: `allowedEmailDomains`.
