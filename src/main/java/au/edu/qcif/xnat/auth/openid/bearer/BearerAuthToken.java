@@ -17,6 +17,7 @@ import org.springframework.security.core.Transient;
 public class BearerAuthToken extends OpenIdAuthToken {
 
     public BearerAuthToken(final UserI details, final String providerId) {
-        super(details, providerId);
+
+        super(details, providerId, null);
     }
 }

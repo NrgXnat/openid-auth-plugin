@@ -11,6 +11,7 @@ import org.nrg.xdat.preferences.SiteConfigPreferences;
 import org.nrg.xdat.services.XdatUserAuthService;
 import org.springframework.security.authentication.AuthenticationEventPublisher;
 import org.springframework.security.authentication.BadCredentialsException;
+import org.springframework.security.web.authentication.AuthenticationSuccessHandler;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -18,10 +19,12 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Optional;
 
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.mock;
 
 /**
  * Unit tests for the ID-token claim-gate wiring in {@link OpenIdConnectFilter}: the filter runs the
@@ -47,7 +50,7 @@ public class OpenIdConnectFilterClaimGateTest {
         lenient().when(plugin.getRedirectUri()).thenReturn("/openid/callback");
         lenient().when(plugin.getEnabledProviders()).thenReturn(Collections.singletonList(PROVIDER));
         providerProps.forEach((key, value) -> lenient().when(plugin.getProperty(PROVIDER, key)).thenReturn(value));
-        return new OpenIdConnectFilter(plugin, eventPublisher, userAuthService, siteConfigPreferences, keystoreService);
+        return new OpenIdConnectFilter(Optional.of(mock(AuthenticationSuccessHandler.class)),plugin, eventPublisher, userAuthService, siteConfigPreferences, keystoreService);
     }
 
     private static void applyIdTokenClaimGates(final OpenIdConnectFilter filter, final String providerId,

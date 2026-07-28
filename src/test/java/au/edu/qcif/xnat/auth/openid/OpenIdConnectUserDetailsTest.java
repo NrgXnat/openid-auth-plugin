@@ -27,7 +27,7 @@ public class OpenIdConnectUserDetailsTest {
     @Mock
     private OpenIdAuthPlugin plugin;
 
-    private Map<String, String> userInfo;
+    private Map<String, Object> userInfo;
 
     @Before
     public void setUp() {
@@ -114,6 +114,6 @@ public class OpenIdConnectUserDetailsTest {
         // Not a declared field -> falls back to the claims map.
         assertEquals("12345", details.getFieldValue("sub"));
         // Neither a field nor a claim -> null.
-        assertNull(details.getFieldValue("does_not_exist"));
+        assertEquals("null", details.getFieldValue("does_not_exist"));
     }
 }

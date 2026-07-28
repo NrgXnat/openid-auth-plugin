@@ -188,8 +188,8 @@ task xnatPluginJar(type: Jar) {
 }
 
 lombok {
-    version = "1.18.34"
-    sha256 = "1ea5ad6c6afcff902d75072b2aaa6695585aebee9f12127e15c0036ba95d2918"
+    version = dependencyManagement.importedProperties["lombok.version"] as String
+    sha256 = dependencyManagement.importedProperties["lombok.checksum"] as String
 }
 
 tasks.withType(Jar).configureEach {

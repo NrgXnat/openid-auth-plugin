@@ -43,14 +43,14 @@ public class OpenIdConnectUserDetails extends XDATUser {
 
     private       OAuth2AccessToken   token;
     private       String              email;
-    private final Map<String, String> openIdUserInfo;
+    private final Map<String, Object> openIdUserInfo;
     private       String              firstName;
     private       String              lastName;
     private       String              username;
     private final String              providerId;
     private final OpenIdAuthPlugin    plugin;
 
-    public OpenIdConnectUserDetails(String providerId, Map<String, String> userInfo, OAuth2AccessToken token, OpenIdAuthPlugin plugin) {
+    public OpenIdConnectUserDetails(String providerId, Map<String, Object> userInfo, OAuth2AccessToken token, OpenIdAuthPlugin plugin) {
         this.openIdUserInfo = userInfo;
         this.providerId     = providerId;
         this.setUsername(resolvePattern(plugin.getProperty(providerId, USERNAME_PATTERN)));
@@ -69,7 +69,7 @@ public class OpenIdConnectUserDetails extends XDATUser {
             value = (String) field.get(this);
         } catch (Exception e) {
             if (openIdUserInfo != null) {
-                value = openIdUserInfo.get(fieldName);
+                value = String.valueOf(openIdUserInfo.get(fieldName));
             }
         }
         return value;
@@ -115,9 +115,9 @@ public class OpenIdConnectUserDetails extends XDATUser {
         this.lastName = lastname;
     }
 
-    private String getUserInfo(final Map<String, String> userInfo, String propName) {
-        String propVal = userInfo.get(plugin.getProperty(providerId, propName));
-        return propVal != null ? propVal : "";
+    private String getUserInfo(final Map<String, Object> userInfo, String propName) {
+        Object propVal = userInfo.get(plugin.getProperty(providerId, propName));
+        return propVal != null ? propVal.toString() : "";
     }
 
     private String resolvePattern(final String usernamePattern) {
@@ -136,7 +136,7 @@ public class OpenIdConnectUserDetails extends XDATUser {
         for (final String key : pairs.keySet()) {
             final String fieldName = pairs.get(key);
             final String fieldValue = getFieldValue(fieldName);
-            if (StringUtils.isBlank(fieldValue)) {
+            if (StringUtils.isBlank(fieldValue) || "null".equals(fieldValue)) {
                 throw new IllegalArgumentException(
                     "Cannot resolve username pattern '" + pattern + "': the claim or field '" + fieldName +
                     "' was not found or blank in the OpenID response. Available claims: " +
