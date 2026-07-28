@@ -100,6 +100,21 @@ The automatic attempt is guarded by a short-lived cookie (about two minutes) so 
 
 Multiple OpenID providers can be configured on the same XNAT alongside this feature; their normal "Sign in with …" links still appear whenever the automatic attempt does not sign the visitor straight in. Only one provider may enable `autoLogin`, though — if more than one does, the first is used and a warning is logged. Because a visitor who already has a session at the auto-login provider is signed in through it before the login page is shown, `autoLogin` is best suited to a deployment with a single primary identity provider.
 
+An XNAT session timeout ("auto-logout") is routed through XNAT's logout so it isn't silently undone by auto-login, and — with `logoutUri` set — it makes the same best-effort logout at the provider that an explicit logout does. One caveat is specific to a timeout: the login's ID token has expired along with the session, so there is no `id_token_hint` to send. A proxy-style `logoutUri` (e.g. oauth2-proxy `/oauth2/sign_out`) does not need one and logs out fully; a provider end-session endpoint that requires the hint (e.g. Keycloak's) will instead show a "Do you want to log out?" page, which an idle user will not answer — so the XNAT session still ends, but the provider (SSO) session lingers until it expires on its own. Point `logoutUri` at a proxy sign-out if you want a timeout to fully clear SSO. A manual logout always has the ID token and logs out cleanly either way.
+
+### openid.`providerId`.logoutUri
+
+The provider's end-session (RP-initiated logout) endpoint — for Keycloak, `https://<keycloak>/realms/<realm>/protocol/openid-connect/logout`. Only meaningful together with `autoLogin`.
+
+With `autoLogin` on, logging out of XNAT could otherwise be undone immediately: if the provider session is still active, the next automatic `prompt=none` request logs the user straight back in. The plugin uses one of two strategies — never both — depending on whether `logoutUri` is set:
+
+- **`logoutUri` not set — local logout:** the provider (SSO) session lives on, so on logout the plugin sets a short-lived cookie that keeps the login page showing (no automatic re-login) until the user signs in again. Works even without provider end-session support, but the user has to click to sign back in.
+- **`logoutUri` set — unified logout:** the plugin performs [OpenID Connect RP-Initiated Logout](https://openid.net/specs/openid-connect-rpinitiated-1_0.html), redirecting to the provider's end-session endpoint (with `id_token_hint`, `post_logout_redirect_uri`, and `client_id`) to end the provider (SSO) session, then back to the XNAT login page. Because the session is actually ended, **no** suppression cookie is set — so after the user signs back in, auto-login works normally. This is the standard, spec-defined logout and the recommended option.
+
+Behind an edge proxy that already brokers OIDC (e.g. oauth2-proxy), point `logoutUri` at the proxy's sign-out endpoint rather than the provider's directly — it clears the proxy's own session too and chains to the provider's end-session.
+
+Notes: with unified logout the provider must allow XNAT's post-logout redirect URI, so register the XNAT login URL as an allowed post-logout redirect on the client. Sending `id_token_hint` requires the ID token, which the plugin keeps server-side (never in a browser cookie, never readable by JavaScript) and stores only when `logoutUri` is set. Per the RP-Initiated Logout spec the hint does travel in the end-session redirect URL, so it reaches browser history and the provider's logs — note it is an audience-restricted ID token, not an access or refresh token.
+
 ### openid.`providerId`.shouldFilterEmailDomains
 
 Controls whether domains of the email should be compared against the whitelist: `allowedEmailDomains`.

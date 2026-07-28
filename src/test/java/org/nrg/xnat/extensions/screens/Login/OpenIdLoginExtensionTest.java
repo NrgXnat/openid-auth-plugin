@@ -18,6 +18,7 @@ import java.util.HashMap;
 import java.util.Map;
 
 import static au.edu.qcif.xnat.auth.openid.OpenIdConnectFilter.AUTO_LOGIN_ATTEMPTED_COOKIE;
+import static au.edu.qcif.xnat.auth.openid.OpenIdConnectFilter.AUTO_LOGIN_SUPPRESS_COOKIE;
 import static au.edu.qcif.xnat.auth.openid.OpenIdConnectFilter.OPENID_ERROR_MESSAGE;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
@@ -136,6 +137,21 @@ public class OpenIdLoginExtensionTest {
     }
 
     @Test
+    public void doesNotRedirectWhenSuppressionCookiePresent() throws Exception {
+        // A logout sets this cookie; auto-login must stay off until the user signs in again.
+        when(data.getSession()).thenReturn(session);
+        when(data.getResponse()).thenReturn(response);
+        when(data.getRequest()).thenReturn(request);
+        when(guestUser.isGuest()).thenReturn(true);
+        when(request.getCookies()).thenReturn(new Cookie[]{new Cookie(AUTO_LOGIN_SUPPRESS_COOKIE, "1")});
+
+        extension.handle(data, guestUser, plugin);
+
+        verify(response, never()).sendRedirect(anyString());
+        verify(response, never()).addCookie(any(Cookie.class));
+    }
+
+    @Test
     public void doesNotRedirectWhenNoProviderOptsIn() throws Exception {
         when(data.getSession()).thenReturn(session);
         when(data.getResponse()).thenReturn(response);
@@ -154,7 +170,6 @@ public class OpenIdLoginExtensionTest {
     @Test
     public void returnsQuietlyWhenRunDataAbsent() {
         extension.execute(new HashMap<>());
-
         verifyNoInteractions(data, session, request, response, plugin);
     }
 
