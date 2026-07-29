@@ -62,7 +62,7 @@ public class OpenIdConnectFilterLogicTest {
         lenient().when(plugin.getRedirectUri()).thenReturn("/openid/callback");
         lenient().when(plugin.getEnabledProviders()).thenReturn(Collections.singletonList(PROVIDER));
         providerProps.forEach((key, value) -> lenient().when(plugin.getProperty(PROVIDER, key)).thenReturn(value));
-        return new OpenIdConnectFilter(Optional.of(mock(AuthenticationSuccessHandler.class)),plugin, eventPublisher, userAuthService, siteConfigPreferences, keystoreService);
+        return new OpenIdConnectFilter(plugin, eventPublisher, userAuthService, siteConfigPreferences, keystoreService);
     }
 
     private static boolean isIdTokenEncrypted(final OpenIdConnectFilter filter, final String idToken) throws Exception {

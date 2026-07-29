@@ -77,11 +77,10 @@ import java.util.Map;
 import java.util.stream.Collectors;
 import au.edu.qcif.xnat.auth.openid.utils.OpenIdUtils;
 import org.nrg.xdat.XDAT;
-import org.nrg.xnat.security.OnXnatLogin;
 import org.springframework.beans.factory.annotation.Qualifier;
 import java.util.Optional;
-
 import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.LOGOUT_URI;
+import org.nrg.xnat.security.OnXnatLogin;
 
 /**
  * Main Spring Security authentication filter.
@@ -135,14 +134,12 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
     private static final String DEFAULT_REDIRECT_URI = "/openid/callback";
     private static final String USER_INFO_URI = "userInfoUri";
 
-    public OpenIdConnectFilter(@Qualifier(OpenIdUtils.ALTERNATE_SUCCESS_HANDLER) Optional<AuthenticationSuccessHandler> oidcSuccessHandler,
-                               final OpenIdAuthPlugin plugin,
+    public OpenIdConnectFilter(final OpenIdAuthPlugin plugin,
                                final AuthenticationEventPublisher eventPublisher,
                                final XdatUserAuthService userAuthService,
                                final SiteConfigPreferences siteConfigPreferences,
                                final KeystoreService keystoreService) {
         super(plugin.getRedirectUri());
-        super.setAuthenticationSuccessHandler(oidcSuccessHandler.orElseGet(() -> XDAT.getContextService().getBean(OnXnatLogin.class)));
         log.debug("Creating filter for URL {}", plugin.getRedirectUri());
         setAuthenticationManager(new NoopAuthenticationManager());
         _plugin = plugin;
@@ -153,6 +150,11 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         _accountPolicy = new OpenIdAccountPolicy(plugin, siteConfigPreferences);
     }
 
+    @Autowired
+    public void setAuthenticationSuccessHandler(@Qualifier(OpenIdUtils.ALTERNATE_SUCCESS_HANDLER) final Optional<AuthenticationSuccessHandler> alternate,
+                                                final AuthenticationSuccessHandler xnatSuccessHandler) {
+        super.setAuthenticationSuccessHandler(alternate.orElse(xnatSuccessHandler));
+    }
 
     @Autowired
     @Override
