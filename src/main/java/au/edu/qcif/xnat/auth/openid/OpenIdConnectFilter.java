@@ -77,11 +77,10 @@ import java.util.Map;
 import java.util.stream.Collectors;
 import au.edu.qcif.xnat.auth.openid.utils.OpenIdUtils;
 import org.nrg.xdat.XDAT;
-import org.nrg.xnat.security.OnXnatLogin;
 import org.springframework.beans.factory.annotation.Qualifier;
 import java.util.Optional;
-
 import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.LOGOUT_URI;
+import org.nrg.xnat.security.OnXnatLogin;
 
 /**
  * Main Spring Security authentication filter.
