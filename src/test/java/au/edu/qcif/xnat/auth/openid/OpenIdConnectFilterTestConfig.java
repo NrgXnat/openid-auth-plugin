@@ -61,12 +61,6 @@ public class OpenIdConnectFilterTestConfig {
     }
 
     @Bean
-    @Qualifier(OpenIdUtils.ALTERNATE_SUCCESS_HANDLER)
-    public AuthenticationSuccessHandler oidcSuccessHandler() {
-        return (request, response, authentication) -> log.info("Handling successful OIDC authentication (test)");
-    }
-
-    @Bean
     public AuthenticationSuccessHandler authenticationSuccessHandler() {
         return (request, response, authentication) -> log.info("Handling successful authentication");
     }
@@ -152,11 +146,11 @@ public class OpenIdConnectFilterTestConfig {
 
     @Bean
     public OpenIdConnectFilter openIdConnectFilter(
-            @Qualifier(OpenIdUtils.ALTERNATE_SUCCESS_HANDLER) Optional<AuthenticationSuccessHandler> oidcSuccessHandler,
+            //@Qualifier(OpenIdUtils.ALTERNATE_SUCCESS_HANDLER) Optional<AuthenticationSuccessHandler> oidcSuccessHandler,
             final SiteConfigPreferences siteConfigPreferences,
                                                    final KeystoreService keystoreService,
                                                    final OpenIdAuthPlugin openIdAuthPlugin,
                                                    final AuthenticationEventPublisher authenticationEventPublisher) {
-        return new OpenIdConnectFilter(oidcSuccessHandler, openIdAuthPlugin, authenticationEventPublisher, userAuthService(), siteConfigPreferences, keystoreService);
+        return new OpenIdConnectFilter(openIdAuthPlugin, authenticationEventPublisher, userAuthService(), siteConfigPreferences, keystoreService);
     }
 }

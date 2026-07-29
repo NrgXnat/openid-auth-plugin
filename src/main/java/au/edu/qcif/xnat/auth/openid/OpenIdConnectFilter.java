@@ -134,16 +134,12 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
     private static final String DEFAULT_REDIRECT_URI = "/openid/callback";
     private static final String USER_INFO_URI = "userInfoUri";
 
-    public OpenIdConnectFilter(@Qualifier(OpenIdUtils.ALTERNATE_SUCCESS_HANDLER) Optional<AuthenticationSuccessHandler> oidcSuccessHandler,
-                               final OpenIdAuthPlugin plugin,
+    public OpenIdConnectFilter(final OpenIdAuthPlugin plugin,
                                final AuthenticationEventPublisher eventPublisher,
                                final XdatUserAuthService userAuthService,
                                final SiteConfigPreferences siteConfigPreferences,
                                final KeystoreService keystoreService) {
         super(plugin.getRedirectUri());
-        super.setAuthenticationSuccessHandler(
-                oidcSuccessHandler.orElseGet(OpenIdConnectFilter::lazyDefaultSuccessHandler)
-        );
         log.debug("Creating filter for URL {}", plugin.getRedirectUri());
         setAuthenticationManager(new NoopAuthenticationManager());
         _plugin = plugin;
@@ -154,6 +150,11 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         _accountPolicy = new OpenIdAccountPolicy(plugin, siteConfigPreferences);
     }
 
+    @Autowired
+    public void setAuthenticationSuccessHandler(@Qualifier(OpenIdUtils.ALTERNATE_SUCCESS_HANDLER) final Optional<AuthenticationSuccessHandler> alternate,
+                                                final AuthenticationSuccessHandler xnatSuccessHandler) {
+        super.setAuthenticationSuccessHandler(alternate.orElse(xnatSuccessHandler));
+    }
 
     private static AuthenticationSuccessHandler lazyDefaultSuccessHandler() {
         return (request, response, authentication) ->
