@@ -144,7 +144,6 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         super.setAuthenticationSuccessHandler(
                 oidcSuccessHandler.orElseGet(OpenIdConnectFilter::lazyDefaultSuccessHandler)
         );
-        //super.setAuthenticationSuccessHandler(oidcSuccessHandler.orElseGet(() -> XDAT.getContextService().getBean(OnXnatLogin.class)));
         log.debug("Creating filter for URL {}", plugin.getRedirectUri());
         setAuthenticationManager(new NoopAuthenticationManager());
         _plugin = plugin;
