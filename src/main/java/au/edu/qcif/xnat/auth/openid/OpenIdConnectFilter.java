@@ -156,13 +156,6 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         super.setAuthenticationSuccessHandler(alternate.orElse(xnatSuccessHandler));
     }
 
-    private static AuthenticationSuccessHandler lazyDefaultSuccessHandler() {
-        return (request, response, authentication) ->
-                XDAT.getContextService()
-                        .getBean(OnXnatLogin.class)
-                        .onAuthenticationSuccess(request, response, authentication);
-    }
-
     @Autowired
     @Override
     public void setAuthenticationFailureHandler(final AuthenticationFailureHandler handler) {
