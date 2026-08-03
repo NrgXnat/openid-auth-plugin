@@ -248,13 +248,13 @@ publishing {
             pom.withXml {
                 def root = asNode()
                 root.appendNode("name", project.description)
-                root.appendNode("url", "https://github.com/nrgxnat/xnat-openid-auth-plugin")
+                root.appendNode("url", "https://github.com/NrgXnat/openid-auth-plugin")
                 root.appendNode("inceptionYear", "2017")
 
                 root.appendNode("scm").with {
-                    appendNode("url", "https://github.com/nrgxnat/xnat-openid-auth-plugin")
-                    appendNode("connection", "scm:https://github.com/nrgxnat/xnat-openid-auth-plugin")
-                    appendNode("developerConnection", "scm:git@github.com:nrgxnat/xnat-openid-auth-plugin.git")
+                    appendNode("url", "https://github.com/NrgXnat/openid-auth-plugin")
+                    appendNode("connection", "scm:https://github.com/NrgXnat/openid-auth-plugin")
+                    appendNode("developerConnection", "scm:git@github.com:NrgXnat/openid-auth-plugin.git")
                 }
 
                 root.appendNode("licenses").appendNode("license").with {
