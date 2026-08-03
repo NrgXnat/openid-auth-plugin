@@ -14,16 +14,28 @@ Again there are 2 ways to accomplish this:
 
 ### 1. Download the pre-built JAR
 
-1. Download the latest development version [here](http://dev.redboxresearchdata.com.au/nexus/service/local/artifact/maven/redirect?r=snapshots&g=au.edu.qcif.xnat.openid&a=openid-auth-plugin&v=LATEST&e=jar)
+Jars are published to XNAT's Artifactory under the coordinates `au.edu.qcif.xnat.openid:openid-auth-plugin`.
+The deployable plugin jar is the one with the `xpl` classifier — it bundles the dependencies the plugin
+needs at runtime.
+
+1. Pick a version and download the `-xpl` jar:
+
+    * Releases: [`libs-release/au/edu/qcif/xnat/openid/openid-auth-plugin`](https://nrgxnat.jfrog.io/nrgxnat/libs-release/au/edu/qcif/xnat/openid/openid-auth-plugin/)
+    * Snapshots: [`libs-snapshot/au/edu/qcif/xnat/openid/openid-auth-plugin`](https://nrgxnat.jfrog.io/nrgxnat/libs-snapshot/au/edu/qcif/xnat/openid/openid-auth-plugin/)
+
+   For example, to fetch the 1.5.0 release:
+
+   `curl -LO https://nrgxnat.jfrog.io/nrgxnat/libs-release/au/edu/qcif/xnat/openid/openid-auth-plugin/1.5.0/openid-auth-plugin-1.5.0-xpl.jar`
 
 1. Copy the plugin jar to your plugins folder:
-   `cp build/libs/xnat-openid-auth-plugin-all-1.0.0-SNAPSHOT.jar /data/xnat/home/plugins`
+
+   `cp openid-auth-plugin-1.5.0-xpl.jar /data/xnat/home/plugins`
 
 ### 2. Build the code and generate the JAR
 
 To build the XNAT OpenID authentication provider plugin:
 
-1. If you haven't already, clone [this repository](https://github.com/qcif/xnat-openid-auth-plugin.git) and cd to the newly cloned folder.
+1. If you haven't already, clone [this repository](https://github.com/NrgXnat/openid-auth-plugin.git) and cd to the newly cloned folder.
 
 1. Build the plugin:
 
@@ -31,11 +43,10 @@ To build the XNAT OpenID authentication provider plugin:
 
    On Windows, you can use the batch file:
 
-   `gradlew.bat clean fatJar`
+   `gradlew.bat clean xnatPluginJar`
 
-This should build the plugin in the file **build/libs/xnat-openid-auth-plugin-all-_1.0.0-SNAPSHOT_.jar** (the version may differ based on updates to the code).
-
-1. Build the plugin jar or download the latest development version [here](http://dev.redboxresearchdata.com.au/nexus/service/local/artifact/maven/redirect?r=snapshots&g=au.edu.qcif.xnat.openid&a=openid-auth-plugin&v=LATEST&e=jar)
+   This builds the plugin jar as **build/libs/openid-auth-plugin-_&lt;version&gt;_-xpl.jar**, where the version
+   comes from `build.gradle` (`1.6.0-SNAPSHOT` at the time of writing).
 
 1. Optionally run the tests:
 
@@ -43,7 +54,7 @@ This should build the plugin in the file **build/libs/xnat-openid-auth-plugin-al
 
 1. Copy the plugin jar to your plugins folder:
 
-   `cp build/libs/xnat-openid-auth-plugin-all-1.0.0-SNAPSHOT.jar /data/xnat/home/plugins`
+   `cp build/libs/openid-auth-plugin-1.6.0-SNAPSHOT-xpl.jar /data/xnat/home/plugins`
 
 ## Configuring and Testing
 
