@@ -375,3 +375,9 @@ When encryption is enabled:
 ## Sample Configuration
 
 [Sample configuration files are found here.](src/main/resources/) Please note the need to rename these files before usage, see opening section of the file.
+
+## License
+
+This plugin is released under the [Simplified BSD (2-clause) license](LICENSE), the same license used by
+XNAT itself. It was originally developed by the Queensland Cyber Infrastructure Foundation under the GNU
+General Public License and was relicensed with the permission of the original authors.
