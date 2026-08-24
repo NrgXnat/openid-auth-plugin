@@ -272,6 +272,104 @@ Whether to auto-create an XNAT account for a validated bearer-token identity tha
 mapping. If unset, falls back to the shared `openid.providerId.forceUserCreate`. When neither is
 `true`, an unmapped identity is denied with 403.
 
+#### openid.`providerId`.linkExisting.enabled
+
+Whether to attach an authenticated identity with no mapping of its own to the XNAT account that
+**another** provider's mapping already names, instead of denying it or creating a duplicate. Default
+`false`. Requires `linkExisting.sourceProvider`.
+
+Like the claim gates, this resolves per path: `openid.providerId.linkExisting.*` applies to both the
+interactive browser login and the bearer path, and a path-scoped
+`openid.providerId.bearer.linkExisting.*` or `openid.providerId.idToken.linkExisting.*` overrides it —
+including a path-scoped `false` over a shared `true`, for a site that wants this on the API path but
+not the browser one.
+
+This exists for the case where a second identity provider is added for people who already have XNAT
+accounts. Authentication mappings are keyed on `(auth_user, auth_method, auth_method_id)`, so a new
+provider's identity resolves to nothing even when the same human already has an account — leading
+either to a 403 or, with auto-create on, to a second permissionless account for one person. Linking
+is attempted **before** auto-creation for exactly that reason.
+
+The value matched on is this provider's own `usernamePattern` output — the same string that was just
+looked up and missed. **So both providers must resolve the same person to the same string.** That also
+makes the match key and the key the new mapping is written under identical by construction, so every
+provider ends up keying a given person the same way.
+
+Only one shape works: both patterns a **single, cross-provider-stable claim**, such as `[upn]` or
+`[oid]`. Two shapes can never match, and both are what this plugin ships by default:
+
+- A **composite** pattern like the default `[providerId]_[sub]` embeds the provider id, so it differs
+  between two providers for the same person by definition.
+- A pattern keyed on **`sub`**, even bare. A `sub` is scoped to its issuer — and for Entra, to the
+  individual application — so two providers never see the same value for one person.
+
+Both are detected at startup and logged, so a configuration that cannot work says so at boot rather
+than returning an unexplained 403 on every call.
+
+Two further caveats worth knowing before enabling this:
+
+- **The lookup is case-sensitive.** Mappings are matched with an exact string comparison, while UPNs
+  and email addresses are case-insensitive in most directories. If the two providers emit the same
+  identifier with different capitalisation, nothing matches. Compare a decoded token against the
+  `auth_user` values actually stored before enabling this.
+- **A mutable key drifts.** Keying on `[upn]` works but breaks for anyone whose UPN changes, since the
+  stored mapping keeps the old value. That is a pre-existing property of `usernamePattern` rather than
+  of linking — a UPN change already breaks interactive login the same way — but linking inherits it.
+  `[oid]` is immutable and is the better key if the mappings are ever re-keyed anyway.
+
+> **This is weaker than the interactive equivalent, deliberately.** XNAT's own account-merge flow
+> (`RegisterExternalLogin`) makes the person prove they own the XNAT account by entering its password.
+> Linking on an asserted identity proves only that the provider asserted it, so it is exactly as
+> trustworthy as the provider presenting the token — and no more. It is off by default.
+>
+> On the interactive path linking is attempted *before* that merge page, so enabling it bypasses the
+> password check for anyone it can match. That is often the point rather than a regression: an account
+> this plugin provisioned via `forceUserCreate` has **no local password at all**, so the merge flow is
+> not available to those users in the first place. The merge page still catches everyone linking cannot
+> match.
+
+**There is no carve-out for privileged accounts.** Linking treats every account the same, site
+administrators included. A mapping mis-targeted by configuration lands on the wrong person's account
+whatever roles that account holds, so screening one tier would narrow nothing while implying a
+protection that is not there. What actually limits the exposure is that this is off by default, that
+an unworkable configuration is rejected at startup, and — decisively — whether the provider presenting
+the token is trusted to assert who someone is at all. Enabling this for a provider means accepting that
+whoever controls it can act as any account it can match, up to and including a site administrator; that
+is a decision to make explicitly rather than discover.
+
+#### What happens to an identity with no mapping yet
+
+With linking configured, an authenticated identity that has no mapping of its own resolves in this
+order. The precedence is the whole design, so it is worth stating plainly:
+
+1. **Link** to the account another provider already maps, if `linkExisting` is enabled for this
+   provider on this path.
+2. **Create** a new account, if `forceUserCreate` is set.
+3. On the interactive path only, **divert to the account merge page**, where the person proves they own
+   an existing XNAT account by entering its password. On the bearer path there is nobody to ask, so this
+   step does not exist and the request is denied with 403.
+
+Linking is first for two reasons. It keeps one person on one XNAT account — without it, a second
+provider plus `forceUserCreate` hands someone who already has an account a second, permissionless one.
+And it reaches people the merge page cannot: an account this plugin provisioned has no local password,
+so for those users the merge page is not a consent gate but a dead end.
+
+What linking gives up is that consent step, so a successful link **notifies** the account holder and
+the site administrator, the way account creation already does. Note also that the merge page is not a
+reliable gate once the bearer path is linking: whoever arrives via the API first is linked silently,
+and the later browser login finds the mapping and never shows the page. If you want people asked on the
+browser path, scope linking to the API path explicitly rather than relying on arrival order:
+
+```
+openid.providerId.bearer.linkExisting.enabled=true
+openid.providerId.idToken.linkExisting.enabled=false
+```
+
+#### openid.`providerId`.linkExisting.sourceProvider
+
+The `provider.id` whose existing mappings are searched — the provider whose accounts this identity
+should be attached to.
+
 ### auto.enabled
 
 Standard XNAT provider attribute that sets the `enabled` property of new users. Set to `false` to require admins to manually enable users before allowing logins, set to `true` to allow immediate access.

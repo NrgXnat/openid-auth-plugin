@@ -42,10 +42,13 @@ import java.text.ParseException;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.ISSUER;
 import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.JWKS_URI;
+import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.USERNAME_PATTERN;
 
 /**
  * Authenticates REST callers that present {@code Authorization: Bearer <jwt>}, where the JWT is an
@@ -129,6 +132,12 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter {
      */
     private static final String SESSION_MGMT_FILTER_APPLIED = resolveSessionMgmtFilterAppliedKey();
 
+    /** A usernamePattern consisting of exactly one claim placeholder, e.g. {@code [oid]}. */
+    private static final Pattern SINGLE_CLAIM_PATTERN = Pattern.compile("\\[([a-zA-Z0-9_]+)]");
+
+    /** Mirrors {@code OpenIdConnectUserDetails.DEFAULT_USERNAME_PATTERN}, applied when a pattern is blank. */
+    private static final String DEFAULT_USERNAME_PATTERN = "[providerId]_[sub]";
+
     private static String resolveSessionMgmtFilterAppliedKey() {
         try {
             final Field field = SessionManagementFilter.class.getDeclaredField("FILTER_APPLIED");
@@ -168,6 +177,7 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter {
         _accountPolicy = new OpenIdAccountPolicy(plugin, siteConfigPreferences);
         _eventPublisher = eventPublisher;
         warnIfAudienceGateUnconfigured();
+        warnIfLinkExistingCannotMatch();
     }
 
     /** Test seam: inject pre-built collaborators (offline validators, fake resolvers). */
@@ -222,6 +232,81 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter {
                         providerId, providerId, providerId);
             }
         }
+    }
+
+    /**
+     * Warns at startup for any bearer provider whose {@code linkExisting} configuration cannot match
+     * anything, so the operator learns it at boot rather than from an unexplained 403 on every call.
+     *
+     * <p>Linking compares this provider's {@code usernamePattern} output against the source provider's
+     * {@code auth_user}, which is <em>its</em> {@code usernamePattern} output. Three shapes never match,
+     * and the first two are easy to configure by accident because they are what the plugin ships:</p>
+     * <ul>
+     *   <li>A <b>composite</b> pattern such as the default {@code [providerId]_[sub]}, which embeds the
+     *       provider id and so differs between two providers for the same person by definition.</li>
+     *   <li>A pattern keyed on <b>{@code sub}</b>, even bare. A {@code sub} is scoped to the issuer (and
+     *       for Entra, to the individual application), so two providers never see the same value.</li>
+     *   <li><b>Differing</b> patterns across the two providers, which is only a caution rather than a
+     *       defect: two claims can legitimately carry the same value under different names, which is the
+     *       normal case when a broker re-emits an upstream claim.</li>
+     * </ul>
+     */
+    private void warnIfLinkExistingCannotMatch() {
+        // Every configured provider on both paths, not just the bearer-eligible ones: linking is shared
+        // now, so an interactive-only provider can enable it too. This validation would sit better on a
+        // component that owns provider config; it lives here because this is the only class with a
+        // startup hook that already walks the provider list.
+        for (final String providerId : _plugin.getEnabledProviders()) {
+            for (final AuthPath path : AuthPath.values()) {
+                validateLinkExisting(providerId, path);
+            }
+        }
+    }
+
+    /** Reports a {@code linkExisting} configuration on one (provider, path) that cannot ever match. */
+    private void validateLinkExisting(final String providerId, final AuthPath path) {
+        {
+            final GateConfig config = new GateConfig(_plugin, providerId, path);
+            if (!config.enabled("linkExisting")) {
+                return;
+            }
+            final String sourceProvider = StringUtils.trimToNull(config.value("linkExisting.sourceProvider"));
+            if (sourceProvider == null) {
+                log.error("Provider '{}' enables linkExisting on the {} path but sets no "
+                        + "linkExisting.sourceProvider; no linking will be attempted until it is set.",
+                        providerId, path.prefix());
+                return;
+            }
+            final String ownPattern = usernamePatternOf(providerId);
+            final String sourcePattern = usernamePatternOf(sourceProvider);
+
+            final Matcher own = SINGLE_CLAIM_PATTERN.matcher(ownPattern);
+            final Matcher src = SINGLE_CLAIM_PATTERN.matcher(sourcePattern);
+            if (!own.matches() || !src.matches()) {
+                log.warn("Provider '{}' enables linkExisting against '{}', but their usernamePatterns ('{}' and "
+                                + "'{}') are not both a single claim. A composite pattern embeds values that differ "
+                                + "between providers, so no link attempt can ever match. Re-key both onto the same "
+                                + "single stable claim (and migrate existing mappings) before enabling this.",
+                        providerId, sourceProvider, ownPattern, sourcePattern);
+                return;
+            }
+            if ("sub".equals(src.group(1)) || "sub".equals(own.group(1))) {
+                log.warn("Provider '{}' enables linkExisting against '{}', and one of them keys accounts on 'sub'. "
+                                + "A sub is scoped to its issuer — and for Entra, to the individual application — so "
+                                + "the two providers never see the same value for one person and linking cannot work. "
+                                + "Re-key onto a cross-provider-stable claim such as oid.",
+                        providerId, sourceProvider);
+            } else if (!src.group(1).equals(own.group(1))) {
+                log.info("Provider '{}' keys accounts on '{}' while source provider '{}' keys on '{}'. That is fine "
+                                + "when both claims carry the same value; verify that they do.",
+                        providerId, own.group(1), sourceProvider, src.group(1));
+            }
+        }
+    }
+
+    /** A provider's configured {@code usernamePattern}, falling back as {@code resolvePattern} does. */
+    private String usernamePatternOf(final String providerId) {
+        return StringUtils.defaultIfBlank(_plugin.getProperty(providerId, USERNAME_PATTERN), DEFAULT_USERNAME_PATTERN);
     }
 
     @Override
@@ -372,12 +457,34 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter {
         }
     }
 
-    /** Looks up the mapped XNAT user, auto-creating it when configured; writes 403 and returns null on failure. */
+    /**
+     * Looks up the mapped XNAT user; on a miss, links to an existing account or auto-creates one when
+     * either is configured. Writes 403 and returns null on failure.
+     *
+     * <p>Linking is attempted before auto-creation, deliberately: when both are enabled, attaching this
+     * identity to the account the person already has is always preferable to provisioning a second,
+     * permissionless duplicate for the same human.</p>
+     */
     private UserI resolveUser(final String providerId, final OpenIdConnectUserDetails user,
                               final HttpServletResponse response) throws IOException {
         try {
             return _userResolver.resolveExisting(user.getUsername(), providerId);
         } catch (final UsernameAuthMappingNotFoundException notFound) {
+            final UserI linked;
+            try {
+                linked = _userResolver.linkExistingIfConfigured(providerId, AuthPath.BEARER, user.getUsername());
+            } catch (final AuthenticationException e) {
+                // The identity matched an eligible account but the mapping could not be saved. Deny rather
+                // than falling through to auto-creation: a link that should have succeeded must not
+                // silently become a duplicate account for someone who already has one.
+                log.warn("Failed to link '{}' on provider '{}' to an existing XNAT account",
+                        user.getUsername(), providerId, e);
+                forbidden(response, "could not link this identity to an existing XNAT account");
+                return null;
+            }
+            if (linked != null) {
+                return linked;
+            }
             if (!isForceUserCreate(providerId)) {
                 log.info("No XNAT account mapped to '{}' for provider '{}' and auto-create is off; denying",
                         user.getUsername(), providerId);

@@ -2,6 +2,7 @@ package au.edu.qcif.xnat.auth.openid;
 
 import au.edu.qcif.xnat.auth.openid.gate.AuthPath;
 import au.edu.qcif.xnat.auth.openid.gate.ClaimGate;
+import au.edu.qcif.xnat.auth.openid.gate.AuthPath;
 import au.edu.qcif.xnat.auth.openid.gate.ClaimGateException;
 import au.edu.qcif.xnat.auth.openid.gate.ClaimGateFactory;
 import au.edu.qcif.xnat.auth.openid.gate.TokenContext;
@@ -133,6 +134,22 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         _accountPolicy = new OpenIdAccountPolicy(plugin, siteConfigPreferences);
     }
 
+    /** Test seam: inject the user resolver so the missing-mapping branches can be driven directly. */
+    OpenIdConnectFilter(final OpenIdAuthPlugin plugin,
+                        final AuthenticationEventPublisher eventPublisher,
+                        final SiteConfigPreferences siteConfigPreferences,
+                        final KeystoreService keystoreService,
+                        final OpenIdUserResolver userResolver) {
+        super(plugin.getRedirectUri());
+        setAuthenticationManager(new NoopAuthenticationManager());
+        _plugin = plugin;
+        _eventPublisher = eventPublisher;
+        _keystoreService = keystoreService;
+        _gateFactory = new ClaimGateFactory(plugin);
+        _userResolver = userResolver;
+        _accountPolicy = new OpenIdAccountPolicy(plugin, siteConfigPreferences);
+    }
+
     @Autowired
     public void setAuthenticationSuccessHandler(@Qualifier(OpenIdUtils.ALTERNATE_SUCCESS_HANDLER) final Optional<AuthenticationSuccessHandler> alternate,
                                                 final AuthenticationSuccessHandler xnatSuccessHandler) {
@@ -247,14 +264,9 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
             requesterUsername = user.getUsername();
             xdatUser = _userResolver.resolveExisting(requesterUsername, providerId);
         } catch (UsernameAuthMappingNotFoundException e) {
-            if (Boolean.parseBoolean(_plugin.getProperty(providerId, "forceUserCreate"))) {
-                xdatUser = _userResolver.createUser(providerId, user);
-            } else {
-                // Give users an option to register or connect OpenID Account with an XNAT account
-                log.info("User {} attempted to log using authentication provider ID {}, diverting to account merge page.", user.getUsername(), providerId);
-                request.getSession().setAttribute(UsernameAuthMappingNotFoundException.class.getSimpleName(), new UsernameAuthMappingNotFoundException(e.getUsername(), e.getAuthMethod(), e.getAuthMethodId(), user.getEmail(), user.getLastname(), user.getFirstname()));
-                response.sendRedirect(TurbineUtils.GetFullServerPath() + "/app/template/RegisterExternalLogin.vm");
-                return null;
+            xdatUser = resolveOnMissingMapping(providerId, user, requesterUsername, e, request, response);
+            if (xdatUser == null) {
+                return null; // diverted to the account merge page
             }
         }
         if (!xdatUser.isEnabled()) {
@@ -402,6 +414,45 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
             signedJWT = SignedJWT.parse(idToken);
         }
         return new TokenContext(signedJWT.getJWTClaimsSet(), signedJWT.getHeader().toJSONObject());
+    }
+
+    /**
+     * Decides what an authenticated identity with no {@code (auth_user, openid, providerId)} mapping
+     * becomes, in this order:
+     *
+     * <ol>
+     *   <li><b>Link</b> to the account another provider already maps, when {@code linkExisting} is
+     *       configured for this provider on the interactive path. Preferred over both alternatives: it
+     *       keeps one person on one account, and unlike the merge page it works for someone whose account
+     *       this plugin provisioned and who therefore has no local password to enter.</li>
+     *   <li><b>Create</b> a new account, when {@code forceUserCreate} is set.</li>
+     *   <li><b>Divert</b> to the account merge page, where the person can prove ownership of an existing
+     *       XNAT account with its password.</li>
+     * </ol>
+     *
+     * @return the resolved user, or {@code null} when the response has been redirected to the merge page
+     *         and the caller should stop.
+     */
+    private UserI resolveOnMissingMapping(final String providerId, final OpenIdConnectUserDetails user,
+                                          final String requesterUsername,
+                                          final UsernameAuthMappingNotFoundException notFound,
+                                          final HttpServletRequest request, final HttpServletResponse response)
+            throws AuthenticationException, IOException {
+        final UserI linked = _userResolver.linkExistingIfConfigured(providerId, AuthPath.ID_TOKEN, requesterUsername);
+        if (linked != null) {
+            return linked;
+        }
+        if (Boolean.parseBoolean(_plugin.getProperty(providerId, "forceUserCreate"))) {
+            return _userResolver.createUser(providerId, user);
+        }
+        // Give users an option to register or connect OpenID Account with an XNAT account
+        log.info("User {} attempted to log using authentication provider ID {}, diverting to account merge page.",
+                user.getUsername(), providerId);
+        request.getSession().setAttribute(UsernameAuthMappingNotFoundException.class.getSimpleName(),
+                new UsernameAuthMappingNotFoundException(notFound.getUsername(), notFound.getAuthMethod(),
+                        notFound.getAuthMethodId(), user.getEmail(), user.getLastname(), user.getFirstname()));
+        response.sendRedirect(TurbineUtils.GetFullServerPath() + "/app/template/RegisterExternalLogin.vm");
+        return null;
     }
 
     private boolean isIdTokenEncrypted(final String idToken) {
