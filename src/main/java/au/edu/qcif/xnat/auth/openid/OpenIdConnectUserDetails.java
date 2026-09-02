@@ -21,7 +21,18 @@ import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.*;
 @SuppressWarnings({"ExternalizableWithoutPublicNoArgConstructor", "deprecation"})
 public class OpenIdConnectUserDetails extends XDATUser {
     private static final long    serialVersionUID         = -1568972028866924986L;
-    private static final Pattern EXTRACTOR                = Pattern.compile("\\[([a-zA-Z0-9_]+)]");
+    /**
+     * Matches one {@code [claimName]} placeholder in a {@code usernamePattern}.
+     *
+     * <p>The accepted characters cover a URI as well as a bare name, because some providers will not emit
+     * a custom claim under a bare one — Auth0 requires custom claims to be namespaced
+     * ({@code https://example.org/upn}) and drops anything else that is not a registered OIDC claim.
+     * Reading such a claim always worked; only referring to it here did not.</p>
+     *
+     * <p>{@code ]} stays excluded, so a placeholder still ends at the first closing bracket and a pattern
+     * naming several claims cannot collapse into one greedy match.</p>
+     */
+    private static final Pattern EXTRACTOR                = Pattern.compile("\\[([a-zA-Z0-9_.:/-]+)]");
     private static final String  DEFAULT_USERNAME_PATTERN = "[providerId]_[sub]";
 
     private       OAuth2AccessToken   token;

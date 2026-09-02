@@ -392,7 +392,17 @@ Flag to enable the PKCE feature in the authorization code grant flow
 
 ### openid.`providerId`.usernamePattern
 
-Default pattern to define `auth_user` field of the `xhbm_xdat_user_auth` table
+Default pattern to define `auth_user` field of the `xhbm_xdat_user_auth` table.
+
+Each `[claimName]` placeholder is replaced with that claim's value from the token — for example
+`[providerId]_[sub]` (the default) or `[upn]`. A claim name may be a URI as well as a bare name, since
+some providers will not emit a custom claim under a bare one: Auth0, for instance, requires custom
+claims to be namespaced and drops anything else that is not a registered OIDC claim. So
+`[https://example.org/upn]` is a valid placeholder.
+
+Note that a placeholder ends at the first `]`, so a claim name cannot itself contain one. Claim names
+matching a field of `OpenIdConnectUserDetails` — `email`, `firstName`, `lastName`, `username` — cannot
+be used, because those are populated after the pattern is resolved and would read as empty.
 
 ### openid.`providerId`.idTokenEncryptionAlgorithm
 
