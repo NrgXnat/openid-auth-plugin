@@ -118,6 +118,7 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
     private static final String DEFAULT_REDIRECT_URI = "/openid/callback";
     private static final String USER_INFO_URI = "userInfoUri";
 
+    @Autowired
     public OpenIdConnectFilter(final OpenIdAuthPlugin plugin,
                                final AuthenticationEventPublisher eventPublisher,
                                final XdatUserAuthService userAuthService,
