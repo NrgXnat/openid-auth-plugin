@@ -105,6 +105,9 @@ public class OpenIdUserResolverLinkTest {
 
         verify(userAuthService, never()).getUserByNameAndAuth(org.mockito.ArgumentMatchers.anyString(),
                 org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString());
+        // Disabled means disabled: the rest of the configuration is not even consulted.
+        verify(plugin, never()).getProperty(PROVIDER, "linkExisting.sourceProvider");
+        verify(plugin, never()).getProperty(PROVIDER, "bearer.linkExisting.sourceProvider");
     }
 
     @Test
@@ -112,8 +115,15 @@ public class OpenIdUserResolverLinkTest {
         // Fail closed on a half-configured provider rather than guessing which provider to match against.
         when(plugin.getProperty(PROVIDER, "bearer.linkExisting.enabled")).thenReturn("true");
 
-        assertNull(resolver().linkExistingIfConfigured(PROVIDER, AuthPath.BEARER, USERNAME));
+        final OpenIdUserResolver resolver = org.mockito.Mockito.spy(resolver());
+        assertNull(resolver.linkExistingIfConfigured(PROVIDER, AuthPath.BEARER, USERNAME));
 
+        // Not merely "returns null" — it must not enter linking with no provider to look against, which a
+        // downstream blank check would otherwise make indistinguishable.
+        // nullable rather than anyString: the argument under test is precisely the one that would be null.
+        verify(resolver, never()).linkExisting(org.mockito.ArgumentMatchers.nullable(String.class),
+                org.mockito.ArgumentMatchers.nullable(String.class),
+                org.mockito.ArgumentMatchers.nullable(String.class));
         verify(userAuthService, never()).getUserByNameAndAuth(org.mockito.ArgumentMatchers.anyString(),
                 org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString());
     }
@@ -293,6 +303,35 @@ public class OpenIdUserResolverLinkTest {
                     .linkExistingIfConfigured(SOURCE_PROVIDER, AuthPath.ID_TOKEN, USERNAME));
             verify(userAuthService).getUserByNameAndAuth(USERNAME, XdatUserAuthService.OPENID, PROVIDER);
             verify(userAuthService, never()).getUserByNameAndAuth(USERNAME, XdatUserAuthService.OPENID, SOURCE_PROVIDER);
+        }
+    }
+
+    @Test
+    public void refusesWhenAConcurrentMappingNamesADifferentAccount() {
+        // Losing the race is only safe if the mapping that appeared names the same account. One naming a
+        // different account means this identity is not linked to the account we resolved, and proceeding
+        // would serve the request as whoever that mapping points at.
+        final XdatUserAuth source = mock(XdatUserAuth.class);
+        when(source.getXdatUsername()).thenReturn(XNAT_LOGIN);
+        when(userAuthService.getUserByNameAndAuth(USERNAME, XdatUserAuthService.OPENID, SOURCE_PROVIDER))
+                .thenReturn(source);
+        doThrow(new RuntimeException("duplicate key"))
+                .when(userAuthService).create(org.mockito.ArgumentMatchers.any(XdatUserAuth.class));
+
+        final XdatUserAuth someoneElse = mock(XdatUserAuth.class);
+        when(someoneElse.getXdatUsername()).thenReturn("a-different-account");
+        when(userAuthService.getUserByNameAndAuth(USERNAME, XdatUserAuthService.OPENID, PROVIDER))
+                .thenReturn(someoneElse);
+
+        try (final MockedStatic<Users> users = mockStatic(Users.class, withSettings().lenient())) {
+            users.when(() -> Users.getUser(XNAT_LOGIN)).thenReturn(mock(UserI.class));
+
+            try {
+                resolver().linkExisting(PROVIDER, USERNAME, SOURCE_PROVIDER);
+                fail("a mapping naming another account must not be treated as a won race");
+            } catch (final AuthenticationException expected) {
+                assertTrue(expected.getMessage().contains("link"));
+            }
         }
     }
 }
