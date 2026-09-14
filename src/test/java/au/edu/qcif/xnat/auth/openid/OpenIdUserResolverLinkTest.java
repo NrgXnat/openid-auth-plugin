@@ -14,6 +14,7 @@ import org.nrg.xdat.turbine.utils.AdminUtils;
 import org.nrg.xft.security.UserI;
 import org.springframework.security.core.AuthenticationException;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
@@ -198,6 +199,100 @@ public class OpenIdUserResolverLinkTest {
             } catch (final AuthenticationException expected) {
                 assertTrue(expected.getMessage().contains("link"));
             }
+        }
+    }
+
+    // ---- notification runs off the authentication path ---------------------------------------------
+
+    /** A resolver whose notifications run on the calling thread, so they can be observed. */
+    private OpenIdUserResolver resolverNotifyingInline() {
+        return new OpenIdUserResolver(plugin, userAuthService, Runnable::run);
+    }
+
+    private void sourceMappingExists() {
+        final XdatUserAuth source = mock(XdatUserAuth.class);
+        lenient().when(source.getXdatUsername()).thenReturn(XNAT_LOGIN);
+        lenient().when(userAuthService.getUserByNameAndAuth(USERNAME, XdatUserAuthService.OPENID, SOURCE_PROVIDER))
+                 .thenReturn(source);
+    }
+
+    @Test
+    public void notificationIsHandedToTheExecutorRatherThanRunInline() {
+        // The mail server is not on the authentication path: a slow one must not add its latency to the
+        // request that links, so the work is submitted rather than performed here.
+        sourceMappingExists();
+        final java.util.List<Runnable> submitted = new java.util.ArrayList<>();
+
+        try (final MockedStatic<Users> users = mockStatic(Users.class, withSettings().lenient())) {
+            users.when(() -> Users.getUser(XNAT_LOGIN)).thenReturn(mock(UserI.class));
+
+            new OpenIdUserResolver(plugin, userAuthService, submitted::add)
+                    .linkExisting(PROVIDER, USERNAME, SOURCE_PROVIDER);
+
+            assertEquals("exactly one notification should be queued", 1, submitted.size());
+        }
+    }
+
+    @Test
+    public void aFailingNotificationDoesNotFailTheLink() {
+        // The link is already committed by this point; a mail failure must not undo a successful sign-in.
+        sourceMappingExists();
+        final UserI account = mock(UserI.class);
+        when(account.getUsername()).thenThrow(new RuntimeException("mail server unreachable"));
+
+        try (final MockedStatic<Users> users = mockStatic(Users.class, withSettings().lenient());
+             final MockedStatic<AdminUtils> admin = mockStatic(AdminUtils.class, withSettings().lenient())) {
+            users.when(() -> Users.getUser(XNAT_LOGIN)).thenReturn(account);
+
+            assertSame(account, resolverNotifyingInline().linkExisting(PROVIDER, USERNAME, SOURCE_PROVIDER));
+        }
+    }
+
+    // ---- two providers each naming the other --------------------------------------------------------
+
+    /**
+     * Reciprocal configuration, which is what a parallel-provider window during a migration needs: whichever
+     * provider a person arrives through first, the other links to the account that arrival established.
+     *
+     * <p>The property worth pinning is that linking does not chain. Each direction performs exactly one
+     * lookup, against the provider it was told to look at — a miss is a miss, not a reason to go looking
+     * through a third provider.</p>
+     */
+    @Test
+    public void eachProviderLinksToTheOtherWithoutChaining() {
+        // openid.partner.linkExisting.sourceProvider = keycloak, and vice versa.
+        when(plugin.getProperty(PROVIDER, "linkExisting.enabled")).thenReturn("true");
+        when(plugin.getProperty(PROVIDER, "linkExisting.sourceProvider")).thenReturn(SOURCE_PROVIDER);
+        when(plugin.getProperty(SOURCE_PROVIDER, "linkExisting.enabled")).thenReturn("true");
+        when(plugin.getProperty(SOURCE_PROVIDER, "linkExisting.sourceProvider")).thenReturn(PROVIDER);
+
+        final XdatUserAuth partnerMapping = mock(XdatUserAuth.class);
+        lenient().when(partnerMapping.getXdatUsername()).thenReturn(XNAT_LOGIN);
+        final XdatUserAuth keycloakMapping = mock(XdatUserAuth.class);
+        lenient().when(keycloakMapping.getXdatUsername()).thenReturn(XNAT_LOGIN);
+
+        try (final MockedStatic<Users> users = mockStatic(Users.class, withSettings().lenient());
+             final MockedStatic<AdminUtils> admin = mockStatic(AdminUtils.class, withSettings().lenient())) {
+
+            final UserI account = mock(UserI.class);
+            users.when(() -> Users.getUser(XNAT_LOGIN)).thenReturn(account);
+
+            // Arriving through PROVIDER: only the keycloak mapping exists yet.
+            when(userAuthService.getUserByNameAndAuth(USERNAME, XdatUserAuthService.OPENID, SOURCE_PROVIDER))
+                    .thenReturn(keycloakMapping);
+            assertSame(account, resolverNotifyingInline()
+                    .linkExistingIfConfigured(PROVIDER, AuthPath.BEARER, USERNAME));
+            verify(userAuthService).getUserByNameAndAuth(USERNAME, XdatUserAuthService.OPENID, SOURCE_PROVIDER);
+            verify(userAuthService, never()).getUserByNameAndAuth(USERNAME, XdatUserAuthService.OPENID, PROVIDER);
+
+            // Arriving through SOURCE_PROVIDER instead: only the partner mapping exists yet.
+            org.mockito.Mockito.reset(userAuthService);
+            when(userAuthService.getUserByNameAndAuth(USERNAME, XdatUserAuthService.OPENID, PROVIDER))
+                    .thenReturn(partnerMapping);
+            assertSame(account, resolverNotifyingInline()
+                    .linkExistingIfConfigured(SOURCE_PROVIDER, AuthPath.ID_TOKEN, USERNAME));
+            verify(userAuthService).getUserByNameAndAuth(USERNAME, XdatUserAuthService.OPENID, PROVIDER);
+            verify(userAuthService, never()).getUserByNameAndAuth(USERNAME, XdatUserAuthService.OPENID, SOURCE_PROVIDER);
         }
     }
 }

@@ -18,6 +18,9 @@ import org.nrg.xft.security.UserI;
 import org.springframework.security.authentication.AuthenticationServiceException;
 import org.springframework.security.core.AuthenticationException;
 
+import java.util.concurrent.Executor;
+import java.util.concurrent.Executors;
+
 /**
  * Resolves an OpenID identity to an XNAT {@link UserI}: looking up the existing
  * {@code (username, OPENID, providerId)} authentication mapping and, when configured to, creating a
@@ -33,12 +36,31 @@ import org.springframework.security.core.AuthenticationException;
 @Slf4j
 public class OpenIdUserResolver {
 
+    /**
+     * Sends link notifications off the authentication path. A link happens once per person per provider,
+     * so one thread is ample; it is a daemon so it never holds up shutdown. Kept static because the two
+     * authentication filters each build their own resolver and there is no reason for two threads.
+     */
+    private static final Executor NOTIFIER = Executors.newSingleThreadExecutor(runnable -> {
+        final Thread thread = new Thread(runnable, "openid-link-notifier");
+        thread.setDaemon(true);
+        return thread;
+    });
+
     private final OpenIdAuthPlugin _plugin;
     private final XdatUserAuthService _userAuthService;
+    private final Executor _notifier;
 
     public OpenIdUserResolver(final OpenIdAuthPlugin plugin, final XdatUserAuthService userAuthService) {
+        this(plugin, userAuthService, NOTIFIER);
+    }
+
+    /** Test seam: run notifications on the caller's thread so they can be observed. */
+    OpenIdUserResolver(final OpenIdAuthPlugin plugin, final XdatUserAuthService userAuthService,
+                       final Executor notifier) {
         _plugin = plugin;
         _userAuthService = userAuthService;
+        _notifier = notifier;
     }
 
     /**
@@ -196,21 +218,29 @@ public class OpenIdUserResolver {
      * login because the mail server was unreachable.</p>
      */
     private void notifyOfLink(final UserI account, final String providerId, final String username) {
-        final String subject = "New sign-in method added to your account";
-        final String body = "The identity '" + username + "' from authentication provider '" + providerId
-                + "' was linked to your XNAT account '" + account.getUsername() + "', so it can now be used to "
-                + "sign in or reach the API as you. If you did not expect this, contact your site administrator.";
-        try {
-            AdminUtils.sendAdminEmail(account, subject, body);
-            final String recipient = account.getEmail();
-            if (StringUtils.isNotBlank(recipient)) {
-                XDAT.getMailService().sendHtmlMessage(XDAT.getSiteConfigPreferences().getAdminEmail(),
-                                                     recipient, subject, body);
+        // Everything, including composing the message, happens off the authentication path and inside the
+        // guard: a slow or unreachable mail server would otherwise add its latency to the one request that
+        // links, and anything that throws while preparing the mail would fail a sign-in that had succeeded.
+        _notifier.execute(() -> {
+            try {
+                final String subject = "New sign-in method added to your account";
+                final String body = "The identity '" + username + "' from authentication provider '" + providerId
+                        + "' was linked to your XNAT account '" + account.getUsername() + "', so it can now be "
+                        + "used to sign in or reach the API as you. If you did not expect this, contact your "
+                        + "site administrator.";
+                AdminUtils.sendAdminEmail(account, subject, body);
+                final String recipient = account.getEmail();
+                if (StringUtils.isNotBlank(recipient)) {
+                    XDAT.getMailService().sendHtmlMessage(XDAT.getSiteConfigPreferences().getAdminEmail(),
+                                                         recipient, subject, body);
+                }
+            } catch (Exception e) {
+                // Only the plain arguments here: the account object is what may have failed, so reporting
+                // through it risks throwing from the handler itself.
+                log.error("Linked '{}' on provider '{}', but could not send notification of it",
+                          username, providerId, e);
             }
-        } catch (Exception e) {
-            log.error("Linked '{}' on provider '{}' to XNAT account '{}', but could not send notification of it",
-                      username, providerId, account.getUsername(), e);
-        }
+        });
     }
 
     /**
