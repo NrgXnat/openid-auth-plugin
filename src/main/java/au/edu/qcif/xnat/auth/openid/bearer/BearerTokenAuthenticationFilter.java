@@ -42,8 +42,6 @@ import java.text.ParseException;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.ISSUER;
@@ -131,9 +129,6 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter {
      * fail loudly at startup (field removed/renamed) instead of silently re-introducing the leak.</p>
      */
     private static final String SESSION_MGMT_FILTER_APPLIED = resolveSessionMgmtFilterAppliedKey();
-
-    /** A usernamePattern consisting of exactly one claim placeholder, e.g. {@code [oid]}. */
-    private static final Pattern SINGLE_CLAIM_PATTERN = Pattern.compile("\\[([a-zA-Z0-9_]+)]");
 
     /** Mirrors {@code OpenIdConnectUserDetails.DEFAULT_USERNAME_PATTERN}, applied when a pattern is blank. */
     private static final String DEFAULT_USERNAME_PATTERN = "[providerId]_[sub]";
@@ -265,42 +260,40 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter {
 
     /** Reports a {@code linkExisting} configuration on one (provider, path) that cannot ever match. */
     private void validateLinkExisting(final String providerId, final AuthPath path) {
-        {
-            final GateConfig config = new GateConfig(_plugin, providerId, path);
-            if (!config.enabled("linkExisting")) {
-                return;
-            }
-            final String sourceProvider = StringUtils.trimToNull(config.value("linkExisting.sourceProvider"));
-            if (sourceProvider == null) {
-                log.error("Provider '{}' enables linkExisting on the {} path but sets no "
-                        + "linkExisting.sourceProvider; no linking will be attempted until it is set.",
-                        providerId, path.prefix());
-                return;
-            }
-            final String ownPattern = usernamePatternOf(providerId);
-            final String sourcePattern = usernamePatternOf(sourceProvider);
+        final GateConfig config = new GateConfig(_plugin, providerId, path);
+        if (!config.enabled("linkExisting")) {
+            return;
+        }
+        final String sourceProvider = StringUtils.trimToNull(config.value("linkExisting.sourceProvider"));
+        if (sourceProvider == null) {
+            log.error("Provider '{}' enables linkExisting on the {} path but sets no "
+                    + "linkExisting.sourceProvider; no linking will be attempted until it is set.",
+                    providerId, path.prefix());
+            return;
+        }
+        final String ownPattern = usernamePatternOf(providerId);
+        final String sourcePattern = usernamePatternOf(sourceProvider);
 
-            final Matcher own = SINGLE_CLAIM_PATTERN.matcher(ownPattern);
-            final Matcher src = SINGLE_CLAIM_PATTERN.matcher(sourcePattern);
-            if (!own.matches() || !src.matches()) {
-                log.warn("Provider '{}' enables linkExisting against '{}', but their usernamePatterns ('{}' and "
-                                + "'{}') are not both a single claim. A composite pattern embeds values that differ "
-                                + "between providers, so no link attempt can ever match. Re-key both onto the same "
-                                + "single stable claim (and migrate existing mappings) before enabling this.",
-                        providerId, sourceProvider, ownPattern, sourcePattern);
-                return;
-            }
-            if ("sub".equals(src.group(1)) || "sub".equals(own.group(1))) {
-                log.warn("Provider '{}' enables linkExisting against '{}', and one of them keys accounts on 'sub'. "
-                                + "A sub is scoped to its issuer — and for Entra, to the individual application — so "
-                                + "the two providers never see the same value for one person and linking cannot work. "
-                                + "Re-key onto a cross-provider-stable claim such as oid.",
-                        providerId, sourceProvider);
-            } else if (!src.group(1).equals(own.group(1))) {
-                log.info("Provider '{}' keys accounts on '{}' while source provider '{}' keys on '{}'. That is fine "
-                                + "when both claims carry the same value; verify that they do.",
-                        providerId, own.group(1), sourceProvider, src.group(1));
-            }
+        final String ownClaim = OpenIdConnectUserDetails.soleClaimName(ownPattern);
+        final String srcClaim = OpenIdConnectUserDetails.soleClaimName(sourcePattern);
+        if (ownClaim == null || srcClaim == null) {
+            log.warn("Provider '{}' enables linkExisting against '{}', but their usernamePatterns ('{}' and "
+                            + "'{}') are not both a single claim. A composite pattern embeds values that differ "
+                            + "between providers, so no link attempt can ever match. Re-key both onto the same "
+                            + "single stable claim (and migrate existing mappings) before enabling this.",
+                    providerId, sourceProvider, ownPattern, sourcePattern);
+            return;
+        }
+        if ("sub".equals(srcClaim) || "sub".equals(ownClaim)) {
+            log.warn("Provider '{}' enables linkExisting against '{}', and one of them keys accounts on 'sub'. "
+                            + "A sub is scoped to its issuer — and for Entra, to the individual application — so "
+                            + "the two providers never see the same value for one person and linking cannot work. "
+                            + "Re-key onto a cross-provider-stable claim such as oid.",
+                    providerId, sourceProvider);
+        } else if (!srcClaim.equals(ownClaim)) {
+            log.info("Provider '{}' keys accounts on '{}' while source provider '{}' keys on '{}'. That is fine "
+                            + "when both claims carry the same value; verify that they do.",
+                    providerId, ownClaim, sourceProvider, srcClaim);
         }
     }
 
