@@ -97,6 +97,20 @@ public class OpenIdUserResolver {
     }
 
     /**
+     * Looks a mapping up without letting the lookup itself become the failure that is reported. Used only
+     * to work out whether a create that failed lost a race, where the original cause is the useful one.
+     */
+    private XdatUserAuth findLinkSourceQuietly(final String username, final String providerId) {
+        try {
+            return findLinkSource(username, providerId);
+        } catch (Exception e) {
+            log.debug("Could not re-read the mapping for '{}' on provider '{}' after a failed create.",
+                      username, providerId, e);
+            return null;
+        }
+    }
+
+    /**
      * Attaches {@code username} under {@code providerId} to the XNAT account that
      * {@code sourceProvider}'s mapping for the same {@code username} already points at, so one person
      * keeps one XNAT account across two identity providers.
@@ -144,16 +158,25 @@ public class OpenIdUserResolver {
                      sourceProvider, xdatUsername, e);
             return null;
         }
-        final XdatUserAuth link = new XdatUserAuth(username, XdatUserAuthService.OPENID, providerId);
+        XdatUserAuth link = new XdatUserAuth(username, XdatUserAuthService.OPENID, providerId);
         link.setXdatUsername(xdatUsername);
         try {
             _userAuthService.create(link);
+            log.info("Linked '{}' on provider '{}' to existing XNAT account '{}' (matched the '{}' mapping).",
+                     username, providerId, xdatUsername, sourceProvider);
         } catch (Exception e) {
-            log.error("Failed to link '{}' on provider '{}' to XNAT account '{}'", username, providerId, xdatUsername, e);
-            throw new AuthenticationServiceException("Failed to link the OpenID identity to an existing XNAT account", e);
+            // A concurrent request for the same person may have created the mapping first: linking runs on
+            // a lookup miss, and a viewer opening a study issues several requests at once, so the first
+            // few can all miss and all try to create it. Re-read before failing — if the mapping is now
+            // there and names the same account, that request won and this one can go on to use it.
+            final XdatUserAuth raced = findLinkSourceQuietly(username, providerId);
+            if (raced == null || !StringUtils.equals(xdatUsername, raced.getXdatUsername())) {
+                log.error("Failed to link '{}' on provider '{}' to XNAT account '{}'", username, providerId, xdatUsername, e);
+                throw new AuthenticationServiceException("Failed to link the OpenID identity to an existing XNAT account", e);
+            }
+            log.info("Mapping for '{}' on provider '{}' was created concurrently; using it.", username, providerId);
+            link = raced;
         }
-        log.info("Linked '{}' on provider '{}' to existing XNAT account '{}' (matched the '{}' mapping).",
-                 username, providerId, xdatUsername, sourceProvider);
         notifyOfLink(existing, providerId, username);
         existing.setAuthorization(link);
         return existing;
