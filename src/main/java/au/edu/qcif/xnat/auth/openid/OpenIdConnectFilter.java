@@ -196,6 +196,23 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
             }
         }
 
+        // The provider is chosen on the outbound request (?providerId=...) and kept in the session,
+        // because the callback carries only OAuth parameters. Neither present means this session never
+        // started the flow -- most often because the sign-in began on a different host than the
+        // configured siteUrl, so the callback arrived in a new, empty session. There is then no token
+        // endpoint to exchange the code against, and attempting it anyway stalls with nothing logged.
+        if (request.getParameter("providerId") == null) {
+            final HttpSession current = request.getSession(false);
+            if (current == null || current.getAttribute("providerId") == null) {
+                log.error("No OpenID provider for this request: no 'providerId' parameter, and none "
+                                + "recorded in the session. If the sign-in started on a different host than "
+                                + "the configured siteUrl ('{}'), the callback arrives in a new session and "
+                                + "the flow cannot continue.",
+                        _plugin.getProps().getProperty("siteUrl"));
+                throw new BadCredentialsException("Could not determine the OpenID provider for this request");
+            }
+        }
+
         OAuth2AccessToken accessToken;
         try {
             log.debug("Getting access token...");

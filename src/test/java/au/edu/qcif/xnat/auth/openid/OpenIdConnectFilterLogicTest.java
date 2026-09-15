@@ -17,8 +17,10 @@ import org.springframework.security.web.authentication.AuthenticationSuccessHand
 import javax.servlet.http.Cookie;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
+import javax.servlet.http.HttpSession;
 import java.lang.reflect.Method;
 import java.util.Collections;
+import java.util.Properties;
 import java.util.Map;
 import java.util.Optional;
 
@@ -60,6 +62,7 @@ public class OpenIdConnectFilterLogicTest {
      */
     private OpenIdConnectFilter filterWith(final Map<String, String> providerProps) {
         lenient().when(plugin.getRedirectUri()).thenReturn("/openid/callback");
+        lenient().when(plugin.getProps()).thenReturn(new Properties());
         lenient().when(plugin.getEnabledProviders()).thenReturn(Collections.singletonList(PROVIDER));
         providerProps.forEach((key, value) -> lenient().when(plugin.getProperty(PROVIDER, key)).thenReturn(value));
         return new OpenIdConnectFilter(plugin, eventPublisher, userAuthService, siteConfigPreferences, keystoreService);
@@ -142,6 +145,38 @@ public class OpenIdConnectFilterLogicTest {
 
         // A non-interaction-required error (e.g. access_denied) is a genuine credential failure, not an
         // expected auto-login fallback, so it surfaces as an exception.
+        filter.attemptAuthentication(request, response);
+    }
+
+    // ---- provider resolution on the callback ---------------------------------------------------
+
+    @Test(expected = BadCredentialsException.class)
+    public void failsWhenNoProviderCanBeDeterminedForTheRequest() throws Exception {
+        final OpenIdConnectFilter filter = filterWith(Collections.emptyMap());
+        final HttpServletRequest request = mock(HttpServletRequest.class);
+        final HttpServletResponse response = mock(HttpServletResponse.class);
+        // A callback with no ?providerId and no session: the sign-in never started here, which is what a
+        // callback landing on a different host than the outbound request looks like. Without this the
+        // token exchange is attempted against a provider whose endpoints are all null, and the request
+        // stalls with nothing logged.
+        when(request.getParameter("providerId")).thenReturn(null);
+        when(request.getSession(false)).thenReturn(null);
+
+        filter.attemptAuthentication(request, response);
+    }
+
+    @Test(expected = BadCredentialsException.class)
+    public void failsWhenTheSessionExistsButNeverRecordedAProvider() throws Exception {
+        final OpenIdConnectFilter filter = filterWith(Collections.emptyMap());
+        final HttpServletRequest request = mock(HttpServletRequest.class);
+        final HttpServletResponse response = mock(HttpServletResponse.class);
+        final HttpSession session = mock(HttpSession.class);
+        when(request.getParameter("providerId")).thenReturn(null);
+        when(request.getSession(false)).thenReturn(session);
+        // The surrounding stale-session check reads through getSession(), not the handle it just took.
+        lenient().when(request.getSession()).thenReturn(session);
+        when(session.getAttribute("providerId")).thenReturn(null);
+
         filter.attemptAuthentication(request, response);
     }
 

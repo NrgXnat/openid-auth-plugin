@@ -172,6 +172,11 @@ public class OpenIdAuthPlugin {
         // Interrogate request to get providerId (e.g. look at url if nothing
         // else)
         String providerId = request.getParameter("providerId");
+        if (providerId == null) {
+            // A callback carries no providerId parameter. Reuse what the outbound request recorded
+            // rather than writing null over it, which would lose the provider for the whole session.
+            providerId = (String) request.getSession().getAttribute("providerId");
+        }
         log.debug("Provider id is: {}", providerId);
         Boolean manageXnatProjectAuthorizations = false;
         try {
