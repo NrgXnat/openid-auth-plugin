@@ -332,7 +332,7 @@ Two further caveats worth knowing before enabling this:
 administrators included. A mapping mis-targeted by configuration lands on the wrong person's account
 whatever roles that account holds, so screening one tier would narrow nothing while implying a
 protection that is not there. What actually limits the exposure is that this is off by default, that
-an unworkable configuration is rejected at startup, and — decisively — whether the provider presenting
+an unworkable configuration is reported at startup (logged, not refused — linking is still attempted per request), and — decisively — whether the provider presenting
 the token is trusted to assert who someone is at all. Enabling this for a provider means accepting that
 whoever controls it can act as any account it can match, up to and including a site administrator; that
 is a decision to make explicitly rather than discover.

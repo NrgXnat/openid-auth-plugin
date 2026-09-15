@@ -33,7 +33,8 @@ public class OpenIdConnectUserDetails extends XDATUser {
      * naming several claims cannot collapse into one greedy match.</p>
      */
     private static final Pattern EXTRACTOR                = Pattern.compile("\\[([a-zA-Z0-9_.:/-]+)]");
-    private static final String  DEFAULT_USERNAME_PATTERN = "[providerId]_[sub]";
+    /** Applied when a provider configures no {@code usernamePattern}. */
+    public static final String   DEFAULT_USERNAME_PATTERN = "[providerId]_[sub]";
 
     private       OAuth2AccessToken   token;
     private       String              email;

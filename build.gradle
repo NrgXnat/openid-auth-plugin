@@ -104,6 +104,9 @@ dependencies {
     testImplementation "org.springframework:spring-test"
     testImplementation "com.github.tomakehurst:wiremock"
     testImplementation "org.mockito:mockito-core"
+    // Test-only: capture what the startup checks log. They are the whole point of those checks, and
+    // nothing else in the suite can observe them. Version comes from the XNAT parent platform.
+    testImplementation "ch.qos.logback:logback-classic"
     testCompileOnly "javax.servlet:javax.servlet-api"
     // Mockito ByteBuddy needs servlet-api at test runtime to introspect XnatAppInfo / xdat classes (see CHECKLIST §5.3)
     testRuntimeOnly "javax.servlet:javax.servlet-api"

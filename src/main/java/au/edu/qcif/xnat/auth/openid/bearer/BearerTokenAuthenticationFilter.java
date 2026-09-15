@@ -139,9 +139,6 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
     /** The placeholders whose value cannot be equal under two providers. */
     private static final Pattern UNMATCHABLE_PLACEHOLDER = Pattern.compile("\\[(providerId|sub)]");
 
-    /** Mirrors {@code OpenIdConnectUserDetails.DEFAULT_USERNAME_PATTERN}, applied when a pattern is blank. */
-    private static final String DEFAULT_USERNAME_PATTERN = "[providerId]_[sub]";
-
     private static String resolveSessionMgmtFilterAppliedKey() {
         try {
             final Field field = SessionManagementFilter.class.getDeclaredField("FILTER_APPLIED");
@@ -270,7 +267,7 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
      *       application — so two providers never see the same value.</li>
      * </ul>
      *
-     * <p>Being <em>composite</em> is not itself a defect: {@code [email]} on one side and
+     * <p>Being <em>composite</em> is not itself a defect: {@code [upn]} on one side and
      * {@code [preferred_username]@[domain]} on the other can resolve to the same string. Patterns that
      * merely differ get an informational note instead, since only the operator can confirm that two
      * claims carry the same value — the normal case when a broker re-emits an upstream claim.</p>
@@ -298,6 +295,16 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
             log.error("Provider '{}' enables linkExisting on the {} path but sets no "
                     + "linkExisting.sourceProvider; no linking will be attempted until it is set.",
                     providerId, path.prefix());
+            return;
+        }
+        if (!_plugin.getEnabledProviders().contains(sourceProvider)) {
+            // Not a defect on its own: linking against the leftover mappings of a decommissioned provider
+            // is a legitimate migration. But usernamePatternOf would fall back to the shipped default for
+            // it and blame [providerId], which sends the operator after the wrong thing.
+            log.warn("Provider '{}' enables linkExisting on the {} path against '{}', which is not a configured "
+                            + "provider. Linking will still match against any mappings that provider left "
+                            + "behind; if that is not intended, check the id for a typo.",
+                    providerId, path.prefix(), sourceProvider);
             return;
         }
         final String ownPattern = usernamePatternOf(providerId);
@@ -336,7 +343,8 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
 
     /** A provider's configured {@code usernamePattern}, falling back as {@code resolvePattern} does. */
     private String usernamePatternOf(final String providerId) {
-        return StringUtils.defaultIfBlank(_plugin.getProperty(providerId, USERNAME_PATTERN), DEFAULT_USERNAME_PATTERN);
+        return StringUtils.defaultIfBlank(_plugin.getProperty(providerId, USERNAME_PATTERN),
+                                          OpenIdConnectUserDetails.DEFAULT_USERNAME_PATTERN);
     }
 
     @Override

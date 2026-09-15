@@ -176,6 +176,11 @@ public class OpenIdUserResolverLinkTest {
         lenient().when(winner.getXdatUsername()).thenReturn(XNAT_LOGIN);
         when(userAuthService.getUserByNameAndAuth(USERNAME, XdatUserAuthService.OPENID, PROVIDER)).thenReturn(winner);
 
+        // Observe notifications through an injected executor. The static one runs them on another
+        // thread, where a MockedStatic set up here does not apply -- so a notification sent from the
+        // losing path would neither be asserted on nor fail, which is how it went unnoticed.
+        final java.util.List<Runnable> submitted = new java.util.ArrayList<>();
+
         try (final MockedStatic<Users> users = mockStatic(Users.class, withSettings().lenient());
              final MockedStatic<AdminUtils> admin = mockStatic(AdminUtils.class, withSettings().lenient());
              final MockedStatic<XDAT> xdat = mockStatic(XDAT.class, withSettings().lenient())) {
@@ -183,8 +188,12 @@ public class OpenIdUserResolverLinkTest {
             final UserI account = mock(UserI.class);
             users.when(() -> Users.getUser(XNAT_LOGIN)).thenReturn(account);
 
-            assertSame(account, resolver().linkExisting(PROVIDER, USERNAME, SOURCE_PROVIDER));
+            assertSame(account, new OpenIdUserResolver(plugin, userAuthService, submitted::add)
+                    .linkExisting(PROVIDER, USERNAME, SOURCE_PROVIDER));
             verify(account).setAuthorization(winner);
+            // The winner already told this person their account was linked. Every loser reaches the same
+            // account by the same mapping, so a notification here is one message per concurrent request.
+            assertEquals("a request that lost the race must not notify", 0, submitted.size());
         }
     }
 

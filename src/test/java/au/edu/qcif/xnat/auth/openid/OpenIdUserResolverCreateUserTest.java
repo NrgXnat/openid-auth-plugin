@@ -7,6 +7,7 @@ import org.mockito.MockedStatic;
 import org.mockito.junit.MockitoJUnitRunner;
 import org.nrg.xdat.entities.XdatUserAuth;
 import org.nrg.xdat.security.helpers.Users;
+import org.nrg.xdat.security.user.exceptions.UserInitException;
 import org.nrg.xdat.services.XdatUserAuthService;
 import org.nrg.xdat.turbine.utils.AdminUtils;
 import org.nrg.xft.event.EventDetails;
@@ -43,7 +44,7 @@ import static org.mockito.Mockito.withSettings;
  * provider and every request re-enters {@code createUser}.</p>
  *
  * <p>The shipped sample configurations hide this: they all default {@code usernamePattern} to
- * {@code [providerId]-[sub]}, which is provider-scoped, so two providers never collide on a login.
+ * {@code [providerId]_[sub]}, which is provider-scoped, so two providers never collide on a login.
  * Deployments that key on a real-world identity instead (for example {@code [upn]}) do collide as
  * soon as a second provider is enabled.</p>
  *
@@ -111,6 +112,27 @@ public class OpenIdUserResolverCreateUserTest {
             resolver().createUser(FIRST_PROVIDER, details(FIRST_PROVIDER));
 
             verify(userAuthService, never()).create(any(XdatUserAuth.class));
+        }
+    }
+
+    @Test
+    public void refusesWhenItCannotTellWhetherTheLoginIsTaken() {
+        try (MockedStatic<Users> users = staticUsers();
+             MockedStatic<AdminUtils> ignored = staticAdminUtils()) {
+
+            // Users.getUser throws for two different reasons: the account does not exist, or it could
+            // not be loaded. Only the first means the login is free. Reading the second as free walks
+            // into the overwrite this guard exists to prevent, so it has to refuse instead.
+            users.when(() -> Users.getUser(LOGIN)).thenThrow(new UserInitException("could not load"));
+
+            try {
+                resolver().createUser(FIRST_PROVIDER, details(FIRST_PROVIDER));
+                fail("a login whose status could not be determined must not be treated as free");
+            } catch (final AuthenticationException expected) {
+                assertTrue(expected.getMessage().toLowerCase().contains("already in use"));
+            }
+            users.verify(() -> Users.save(any(UserI.class), any(UserI.class), anyBoolean(), any(EventDetails.class)),
+                         never());
         }
     }
 

@@ -469,9 +469,10 @@ public class BearerTokenAuthenticationFilterTest {
 
     @Test
     public void acceptsCompositePatternsThatCouldResolveToTheSameValue() {
-        // [email] and [preferred_username]@[domain] can be the same string, so this is the operator's
-        // call to verify, not something to refuse at startup.
-        assertNull(BearerTokenAuthenticationFilter.unmatchablePlaceholder("[email]",
+        // [upn] and [preferred_username]@[domain] can be the same string, so this is the operator's
+        // call to verify, not something to refuse at startup. ([email] would be the natural example
+        // but cannot be referenced at all -- see the usernamePattern notes in the README.)
+        assertNull(BearerTokenAuthenticationFilter.unmatchablePlaceholder("[upn]",
                                                                           "[preferred_username]@[domain]"));
         assertNull(BearerTokenAuthenticationFilter.unmatchablePlaceholder("[https://example.org/upn]",
                                                                           "[preferred_username]"));

@@ -10,6 +10,7 @@ import org.nrg.xdat.XDAT;
 import org.nrg.xdat.entities.XdatUserAuth;
 import org.nrg.xdat.exceptions.UsernameAuthMappingNotFoundException;
 import org.nrg.xdat.security.helpers.Users;
+import org.nrg.xdat.security.user.exceptions.UserNotFoundException;
 import org.nrg.xdat.services.XdatUserAuthService;
 import org.nrg.xdat.turbine.utils.AdminUtils;
 import org.nrg.xft.event.EventDetails;
@@ -150,7 +151,7 @@ public class OpenIdUserResolver {
      * deliberately no carve-out for privileged accounts: a mapping mis-targeted by configuration lands on
      * the wrong person's account whatever roles that account holds, so screening one tier would narrow
      * nothing while implying a protection that is not there. The controls that do the work are that this
-     * is off by default, that {@code warnIfLinkExistingCannotMatch} rejects configurations which cannot
+     * is off by default, that {@code warnIfLinkExistingCannotMatch} warns at startup about configurations which cannot
      * match, and — decisively — whether the provider presenting the token is trusted to assert who
      * someone is at all.</p>
      *
@@ -182,8 +183,10 @@ public class OpenIdUserResolver {
         }
         XdatUserAuth link = new XdatUserAuth(username, XdatUserAuthService.OPENID, providerId);
         link.setXdatUsername(xdatUsername);
+        boolean created = false;
         try {
             _userAuthService.create(link);
+            created = true;
             log.info("Linked '{}' on provider '{}' to existing XNAT account '{}' (matched the '{}' mapping).",
                      username, providerId, xdatUsername, sourceProvider);
         } catch (Exception e) {
@@ -199,7 +202,12 @@ public class OpenIdUserResolver {
             log.info("Mapping for '{}' on provider '{}' was created concurrently; using it.", username, providerId);
             link = raced;
         }
-        notifyOfLink(existing, providerId, username);
+        // Only the request that created the mapping announces it. Every loser of the race reaches the
+        // same account by the same link, so notifying from here would send one message per concurrent
+        // request -- and concurrent first requests are the normal case, not the exception.
+        if (created) {
+            notifyOfLink(existing, providerId, username);
+        }
         existing.setAuthorization(link);
         return existing;
     }
@@ -316,8 +324,16 @@ public class OpenIdUserResolver {
         try {
             // The same idiom XNAT's own save uses to test for an existing account.
             taken = Users.getUser(login) != null;
-        } catch (Exception ignored) {
-            return; // No such user; creation may proceed.
+        } catch (final UserNotFoundException absent) {
+            return; // No account holds this login; creation may proceed.
+        } catch (final Exception e) {
+            // Anything else means we could not determine whether the login is free. Treating that as
+            // free would walk straight into the overwrite this guard exists to prevent, so refuse.
+            log.error("Could not determine whether XNAT login '{}' is already taken, so provider '{}' will not "
+                            + "create an account for it. Refusing rather than risking an overwrite.",
+                    login, providerId, e);
+            throw new AuthenticationServiceException(
+                    "Could not determine whether the login this identity resolves to is already in use");
         }
         if (taken) {
             log.error("Provider '{}' resolved to XNAT login '{}', which already exists but has no mapping for "
