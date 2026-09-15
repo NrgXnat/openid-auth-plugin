@@ -299,23 +299,24 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
         final String ownClaim = OpenIdConnectUserDetails.soleClaimName(ownPattern);
         final String srcClaim = OpenIdConnectUserDetails.soleClaimName(sourcePattern);
         if (ownClaim == null || srcClaim == null) {
-            log.warn("Provider '{}' enables linkExisting against '{}', but their usernamePatterns ('{}' and "
-                            + "'{}') are not both a single claim. A composite pattern embeds values that differ "
-                            + "between providers, so no link attempt can ever match. Re-key both onto the same "
-                            + "single stable claim (and migrate existing mappings) before enabling this.",
-                    providerId, sourceProvider, ownPattern, sourcePattern);
+            log.warn("Provider '{}' enables linkExisting against '{}' on the {} path, but their usernamePatterns "
+                            + "('{}' and '{}') are not both a single claim. A composite pattern embeds values that "
+                            + "differ between providers, so no link attempt can ever match. Re-key both onto the "
+                            + "same single stable claim (and migrate existing mappings) before enabling this.",
+                    providerId, sourceProvider, path.prefix(), ownPattern, sourcePattern);
             return;
         }
         if ("sub".equals(srcClaim) || "sub".equals(ownClaim)) {
-            log.warn("Provider '{}' enables linkExisting against '{}', and one of them keys accounts on 'sub'. "
-                            + "A sub is scoped to its issuer — and for Entra, to the individual application — so "
-                            + "the two providers never see the same value for one person and linking cannot work. "
-                            + "Re-key onto a cross-provider-stable claim such as oid.",
-                    providerId, sourceProvider);
+            log.warn("Provider '{}' enables linkExisting against '{}' on the {} path, and one of them keys accounts "
+                            + "on 'sub'. A sub is scoped to its issuer — and for Entra, to the individual "
+                            + "application — so the two providers never see the same value for one person and "
+                            + "linking cannot work. Re-key onto a cross-provider-stable claim such as oid.",
+                    providerId, sourceProvider, path.prefix());
         } else if (!srcClaim.equals(ownClaim)) {
-            log.info("Provider '{}' keys accounts on '{}' while source provider '{}' keys on '{}'. That is fine "
-                            + "when both claims carry the same value; verify that they do.",
-                    providerId, ownClaim, sourceProvider, srcClaim);
+            log.info("Provider '{}' keys accounts on '{}' while source provider '{}' keys on '{}', for linking on "
+                            + "the {} path. That is fine when both claims carry the same value; verify that they "
+                            + "do. A provider configured with the shared key reports once per path.",
+                    providerId, ownClaim, sourceProvider, srcClaim, path.prefix());
         }
     }
 
