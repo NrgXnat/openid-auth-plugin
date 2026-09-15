@@ -56,27 +56,6 @@ public class OpenIdConnectUserDetails extends XDATUser {
         this.setLastname(getUserInfo(userInfo, FAMILY_NAME));
     }
 
-    /**
-     * The claim a {@code usernamePattern} names, when it names exactly one and adds nothing around it —
-     * {@code [oid]} or {@code [https://example.org/upn]} — or {@code null} for a composite pattern such as
-     * the default {@code [providerId]_[sub]}.
-     *
-     * <p>Lives here so it cannot drift from {@link #EXTRACTOR}: a pattern this accepts is by construction
-     * one {@link #EXTRACTOR} resolves, which is what makes it safe to reason about two providers keying
-     * accounts on the same claim.</p>
-     *
-     * @param usernamePattern the configured pattern.
-     *
-     * @return the sole claim name, or {@code null}.
-     */
-    public static String soleClaimName(final String usernamePattern) {
-        if (usernamePattern == null) {
-            return null;
-        }
-        final Matcher matcher = EXTRACTOR.matcher(usernamePattern);
-        return matcher.matches() ? matcher.group(1) : null;
-    }
-
     public String getFieldValue(String fieldName) {
         String value = null;
         try {

@@ -10,7 +10,6 @@ import java.util.Map;
 
 import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.USERNAME_PATTERN;
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNull;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.when;
 
@@ -85,37 +84,5 @@ public class OpenIdConnectUserDetailsNamespacedClaimTest {
     public void mixesABareAndANamespacedPlaceholder() {
         final Map<String, Object> claims = claims("https://example.org/upn", "alice");
         assertEquals("partner-alice", usernameFor("[providerId]-[https://example.org/upn]", claims));
-    }
-
-    /**
-     * The startup validation for {@code linkExisting} asks whether a pattern names exactly one claim, and
-     * it has to answer that over the same syntax {@code usernamePattern} accepts. It once carried its own
-     * copy of the placeholder regex, which kept the pre-URI character class: every one of the URI-named
-     * patterns above was reported as "not a single claim, so no link attempt can ever match" — a warning
-     * that is false, and false about precisely the configuration a namespaced provider is forced into.
-     */
-    @Test
-    public void namesTheSoleClaimOfAUriNamedPattern() {
-        assertEquals("https://example.org/upn",
-                     OpenIdConnectUserDetails.soleClaimName("[https://example.org/upn]"));
-        assertEquals("urn:partner-corp.example:upn",
-                     OpenIdConnectUserDetails.soleClaimName("[urn:partner-corp.example:upn]"));
-    }
-
-    @Test
-    public void namesTheSoleClaimOfABarePattern() {
-        assertEquals("upn", OpenIdConnectUserDetails.soleClaimName("[upn]"));
-        assertEquals("sub", OpenIdConnectUserDetails.soleClaimName("[sub]"));
-    }
-
-    @Test
-    public void namesNoSoleClaimForAPatternThatIsNotOneWholePlaceholder() {
-        // The shipped default, a prefixed placeholder, and a bare word: none names one claim and nothing
-        // else, which is what makes each of them unable to match a second provider's value.
-        assertNull(OpenIdConnectUserDetails.soleClaimName("[providerId]_[sub]"));
-        assertNull(OpenIdConnectUserDetails.soleClaimName("x[upn]"));
-        assertNull(OpenIdConnectUserDetails.soleClaimName("[upn]-"));
-        assertNull(OpenIdConnectUserDetails.soleClaimName("upn"));
-        assertNull(OpenIdConnectUserDetails.soleClaimName(null));
     }
 }

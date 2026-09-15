@@ -44,6 +44,8 @@ import java.text.ParseException;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
@@ -133,6 +135,9 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
      * fail loudly at startup (field removed/renamed) instead of silently re-introducing the leak.</p>
      */
     private static final String SESSION_MGMT_FILTER_APPLIED = resolveSessionMgmtFilterAppliedKey();
+
+    /** The placeholders whose value cannot be equal under two providers. */
+    private static final Pattern UNMATCHABLE_PLACEHOLDER = Pattern.compile("\\[(providerId|sub)]");
 
     /** Mirrors {@code OpenIdConnectUserDetails.DEFAULT_USERNAME_PATTERN}, applied when a pattern is blank. */
     private static final String DEFAULT_USERNAME_PATTERN = "[providerId]_[sub]";
@@ -256,17 +261,19 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
      * anything, so the operator learns it at boot rather than from an unexplained 403 on every call.
      *
      * <p>Linking compares this provider's {@code usernamePattern} output against the source provider's
-     * {@code auth_user}, which is <em>its</em> {@code usernamePattern} output. Three shapes never match,
-     * and the first two are easy to configure by accident because they are what the plugin ships:</p>
+     * {@code auth_user}, which is <em>its</em> {@code usernamePattern} output. Exactly two placeholders
+     * make that comparison impossible, wherever they appear and whatever else the pattern contains:</p>
      * <ul>
-     *   <li>A <b>composite</b> pattern such as the default {@code [providerId]_[sub]}, which embeds the
-     *       provider id and so differs between two providers for the same person by definition.</li>
-     *   <li>A pattern keyed on <b>{@code sub}</b>, even bare. A {@code sub} is scoped to the issuer (and
-     *       for Entra, to the individual application), so two providers never see the same value.</li>
-     *   <li><b>Differing</b> patterns across the two providers, which is only a caution rather than a
-     *       defect: two claims can legitimately carry the same value under different names, which is the
-     *       normal case when a broker re-emits an upstream claim.</li>
+     *   <li><b>{@code [providerId]}</b>, which is the provider's own id, so two providers embed different
+     *       values for the same person by definition.</li>
+     *   <li><b>{@code [sub]}</b>, which is scoped to its issuer — and for Entra, to the individual
+     *       application — so two providers never see the same value.</li>
      * </ul>
+     *
+     * <p>Being <em>composite</em> is not itself a defect: {@code [email]} on one side and
+     * {@code [preferred_username]@[domain]} on the other can resolve to the same string. Patterns that
+     * merely differ get an informational note instead, since only the operator can confirm that two
+     * claims carry the same value — the normal case when a broker re-emits an upstream claim.</p>
      */
     private void warnIfLinkExistingCannotMatch() {
         // Every configured provider on both paths, not just the bearer-eligible ones: linking is shared
@@ -296,28 +303,35 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
         final String ownPattern = usernamePatternOf(providerId);
         final String sourcePattern = usernamePatternOf(sourceProvider);
 
-        final String ownClaim = OpenIdConnectUserDetails.soleClaimName(ownPattern);
-        final String srcClaim = OpenIdConnectUserDetails.soleClaimName(sourcePattern);
-        if (ownClaim == null || srcClaim == null) {
-            log.warn("Provider '{}' enables linkExisting against '{}' on the {} path, but their usernamePatterns "
-                            + "('{}' and '{}') are not both a single claim. A composite pattern embeds values that "
-                            + "differ between providers, so no link attempt can ever match. Re-key both onto the "
-                            + "same single stable claim (and migrate existing mappings) before enabling this.",
-                    providerId, sourceProvider, path.prefix(), ownPattern, sourcePattern);
-            return;
-        }
-        if ("sub".equals(srcClaim) || "sub".equals(ownClaim)) {
-            log.warn("Provider '{}' enables linkExisting against '{}' on the {} path, and one of them keys accounts "
-                            + "on 'sub'. A sub is scoped to its issuer — and for Entra, to the individual "
-                            + "application — so the two providers never see the same value for one person and "
-                            + "linking cannot work. Re-key onto a cross-provider-stable claim such as oid.",
-                    providerId, sourceProvider, path.prefix());
-        } else if (!srcClaim.equals(ownClaim)) {
+        final String unmatchable = unmatchablePlaceholder(ownPattern, sourcePattern);
+        if (unmatchable != null) {
+            log.warn("Provider '{}' enables linkExisting against '{}' on the {} path, but one of their "
+                            + "usernamePatterns ('{}' and '{}') is keyed on '{}', whose value cannot be the same "
+                            + "under two providers: providerId is the provider's own id, and sub is scoped to its "
+                            + "issuer — for Entra, to the individual application. No link attempt can ever match. "
+                            + "Re-key both onto a claim that is stable across providers, such as oid, and migrate "
+                            + "existing mappings before enabling this.",
+                    providerId, sourceProvider, path.prefix(), ownPattern, sourcePattern, unmatchable);
+        } else if (!ownPattern.equals(sourcePattern)) {
             log.info("Provider '{}' keys accounts on '{}' while source provider '{}' keys on '{}', for linking on "
-                            + "the {} path. That is fine when both claims carry the same value; verify that they "
-                            + "do. A provider configured with the shared key reports once per path.",
-                    providerId, ownClaim, sourceProvider, srcClaim, path.prefix());
+                            + "the {} path. That is fine when both resolve to the same value; verify that they do. "
+                            + "A provider configured with the shared key reports once per path.",
+                    providerId, ownPattern, sourceProvider, sourcePattern, path.prefix());
         }
+    }
+
+    /**
+     * The first of the two cross-provider-impossible placeholders named by any of {@code patterns}, or
+     * {@code null} if none of them names one.
+     */
+    static String unmatchablePlaceholder(final String... patterns) {
+        for (final String pattern : patterns) {
+            final Matcher matcher = UNMATCHABLE_PLACEHOLDER.matcher(pattern);
+            if (matcher.find()) {
+                return matcher.group(1);
+            }
+        }
+        return null;
     }
 
     /** A provider's configured {@code usernamePattern}, falling back as {@code resolvePattern} does. */

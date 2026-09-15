@@ -445,4 +445,41 @@ public class BearerTokenAuthenticationFilterTest {
         assertNotNull("chain should be invoked", chain.getRequest());
         org.mockito.Mockito.verify(eventPublisher).publishAuthenticationSuccess(org.mockito.ArgumentMatchers.any());
     }
+
+    // ---- which usernamePattern pairs can never match --------------------------------------------
+
+    /**
+     * Only {@code providerId} and {@code sub} make two providers' patterns incomparable. Being composite
+     * does not: the earlier check tested for "is this one whole claim", which warned that working
+     * configurations could never match and stayed silent on a bare {@code [providerId]}, which cannot.
+     */
+    @Test
+    public void namesTheProviderIdPlaceholderWhereverItAppears() {
+        assertEquals("providerId", BearerTokenAuthenticationFilter.unmatchablePlaceholder("[providerId]_[sub]"));
+        assertEquals("providerId", BearerTokenAuthenticationFilter.unmatchablePlaceholder("[providerId]"));
+        assertEquals("providerId",
+                     BearerTokenAuthenticationFilter.unmatchablePlaceholder("[upn]", "x-[providerId]-y"));
+    }
+
+    @Test
+    public void namesTheSubPlaceholderWhereverItAppears() {
+        assertEquals("sub", BearerTokenAuthenticationFilter.unmatchablePlaceholder("[sub]"));
+        assertEquals("sub", BearerTokenAuthenticationFilter.unmatchablePlaceholder("[upn]", "[sub]"));
+    }
+
+    @Test
+    public void acceptsCompositePatternsThatCouldResolveToTheSameValue() {
+        // [email] and [preferred_username]@[domain] can be the same string, so this is the operator's
+        // call to verify, not something to refuse at startup.
+        assertNull(BearerTokenAuthenticationFilter.unmatchablePlaceholder("[email]",
+                                                                          "[preferred_username]@[domain]"));
+        assertNull(BearerTokenAuthenticationFilter.unmatchablePlaceholder("[https://example.org/upn]",
+                                                                          "[preferred_username]"));
+    }
+
+    @Test
+    public void doesNotMatchAClaimMerelyContainingTheWord() {
+        // 'subject' and 'my_providerId' are ordinary claim names; only the exact placeholders count.
+        assertNull(BearerTokenAuthenticationFilter.unmatchablePlaceholder("[subject]", "[my_providerId]"));
+    }
 }
