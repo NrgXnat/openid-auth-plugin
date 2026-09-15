@@ -28,6 +28,8 @@ import org.springframework.security.core.Authentication;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.web.session.SessionManagementFilter;
+import org.springframework.context.ApplicationListener;
+import org.springframework.context.event.ContextRefreshedEvent;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
@@ -42,6 +44,7 @@ import java.text.ParseException;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
 import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.ISSUER;
@@ -110,7 +113,8 @@ import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.USERNAME_PATTE
  */
 @Slf4j
 @Component
-public class BearerTokenAuthenticationFilter extends OncePerRequestFilter {
+public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
+        implements ApplicationListener<ContextRefreshedEvent> {
 
     /**
      * Value of Spring Security's package-private {@code SessionManagementFilter.FILTER_APPLIED}
@@ -155,6 +159,8 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter {
     private final OpenIdUserResolver _userResolver;
     private final OpenIdAccountPolicy _accountPolicy;
     private final AuthenticationEventPublisher _eventPublisher;
+    /** Guards against the repeated refresh events a parent/child context hierarchy produces. */
+    private final AtomicBoolean _configReported = new AtomicBoolean();
 
     @Autowired
     public BearerTokenAuthenticationFilter(final OpenIdAuthPlugin plugin,
@@ -171,8 +177,24 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter {
         _userResolver = new OpenIdUserResolver(plugin, userAuthService);
         _accountPolicy = new OpenIdAccountPolicy(plugin, siteConfigPreferences);
         _eventPublisher = eventPublisher;
-        warnIfAudienceGateUnconfigured();
-        warnIfLinkExistingCannotMatch();
+    }
+
+    /**
+     * Reports configuration problems once the context is up, rather than while this bean is being
+     * constructed.
+     *
+     * <p>XNAT applies a plugin's own logging configuration part-way through initialisation, after beans
+     * like this one exist. Anything logged from the constructor therefore goes to a logger that has not
+     * been configured yet, inherits the server's {@code ERROR} root level, and is discarded — so these
+     * checks ran and said nothing. Deferring them to context-refresh puts the output where the plugin's
+     * logging configuration sends it, at the level it sets.</p>
+     */
+    @Override
+    public void onApplicationEvent(final ContextRefreshedEvent event) {
+        if (_configReported.compareAndSet(false, true)) {
+            warnIfAudienceGateUnconfigured();
+            warnIfLinkExistingCannotMatch();
+        }
     }
 
     /** Test seam: inject pre-built collaborators (offline validators, fake resolvers). */
