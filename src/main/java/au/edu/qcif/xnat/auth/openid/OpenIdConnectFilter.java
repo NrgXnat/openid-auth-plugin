@@ -62,6 +62,7 @@ import au.edu.qcif.xnat.auth.openid.utils.OpenIdUtils;
 import org.nrg.xdat.XDAT;
 import org.springframework.beans.factory.annotation.Qualifier;
 import java.util.Optional;
+import java.util.concurrent.Executor;
 import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.LOGOUT_URI;
 import org.nrg.xnat.security.OnXnatLogin;
 
@@ -117,12 +118,17 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
     private static final String DEFAULT_REDIRECT_URI = "/openid/callback";
     private static final String USER_INFO_URI = "userInfoUri";
 
+    /**
+     * XNAT's own {@code asyncTaskExecutor}, taken by name: it declares two beans implementing
+     * {@code AsyncTaskExecutor} (this one and the task scheduler), so by-type injection is ambiguous.
+     */
     @Autowired
     public OpenIdConnectFilter(final OpenIdAuthPlugin plugin,
                                final AuthenticationEventPublisher eventPublisher,
                                final XdatUserAuthService userAuthService,
                                final SiteConfigPreferences siteConfigPreferences,
-                               final KeystoreService keystoreService) {
+                               final KeystoreService keystoreService,
+                               @Qualifier("asyncTaskExecutor") final Executor notifier) {
         super(plugin.getRedirectUri());
         log.debug("Creating filter for URL {}", plugin.getRedirectUri());
         setAuthenticationManager(new NoopAuthenticationManager());
@@ -130,7 +136,7 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         _eventPublisher = eventPublisher;
         _keystoreService = keystoreService;
         _gateFactory = new ClaimGateFactory(plugin);
-        _userResolver = new OpenIdUserResolver(plugin, userAuthService);
+        _userResolver = new OpenIdUserResolver(plugin, userAuthService, notifier);
         _accountPolicy = new OpenIdAccountPolicy(plugin, siteConfigPreferences);
     }
 

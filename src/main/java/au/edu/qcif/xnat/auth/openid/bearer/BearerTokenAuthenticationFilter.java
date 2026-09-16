@@ -23,6 +23,7 @@ import org.nrg.xdat.services.XdatUserAuthService;
 import org.nrg.xdat.turbine.utils.AccessLogger;
 import org.nrg.xft.security.UserI;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.security.authentication.AuthenticationEventPublisher;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.AuthenticationException;
@@ -44,6 +45,7 @@ import java.text.ParseException;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.Executor;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -164,11 +166,16 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
     /** Guards against the repeated refresh events a parent/child context hierarchy produces. */
     private final AtomicBoolean _configReported = new AtomicBoolean();
 
+    /**
+     * XNAT's own {@code asyncTaskExecutor}, taken by name: it declares two beans implementing
+     * {@code AsyncTaskExecutor} (this one and the task scheduler), so by-type injection is ambiguous.
+     */
     @Autowired
     public BearerTokenAuthenticationFilter(final OpenIdAuthPlugin plugin,
                                            final XdatUserAuthService userAuthService,
                                            final SiteConfigPreferences siteConfigPreferences,
-                                           final AuthenticationEventPublisher eventPublisher) {
+                                           final AuthenticationEventPublisher eventPublisher,
+                                           @Qualifier("asyncTaskExecutor") final Executor notifier) {
         // Build the provider resolver once and derive the validators from it, so the eligible-provider
         // config is scanned (and any fail-closed errors logged) a single time at startup.
         _plugin = plugin;
@@ -176,7 +183,7 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
         _providerResolver = new BearerProviderResolver(plugin);
         _validators = buildValidators(_providerResolver, plugin);
         _gateFactory = new ClaimGateFactory(plugin);
-        _userResolver = new OpenIdUserResolver(plugin, userAuthService);
+        _userResolver = new OpenIdUserResolver(plugin, userAuthService, notifier);
         _accountPolicy = new OpenIdAccountPolicy(plugin, siteConfigPreferences);
         _eventPublisher = eventPublisher;
     }

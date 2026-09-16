@@ -20,7 +20,6 @@ import org.springframework.security.authentication.AuthenticationServiceExceptio
 import org.springframework.security.core.AuthenticationException;
 
 import java.util.concurrent.Executor;
-import java.util.concurrent.Executors;
 
 /**
  * Resolves an OpenID identity to an XNAT {@link UserI}: looking up the existing
@@ -37,28 +36,30 @@ import java.util.concurrent.Executors;
 @Slf4j
 public class OpenIdUserResolver {
 
-    /**
-     * Sends link notifications off the authentication path. A link happens once per person per provider,
-     * so one thread is ample; it is a daemon so it never holds up shutdown. Kept static because the two
-     * authentication filters each build their own resolver and there is no reason for two threads.
-     */
-    private static final Executor NOTIFIER = Executors.newSingleThreadExecutor(runnable -> {
-        final Thread thread = new Thread(runnable, "openid-link-notifier");
-        thread.setDaemon(true);
-        return thread;
-    });
-
     private final OpenIdAuthPlugin _plugin;
     private final XdatUserAuthService _userAuthService;
     private final Executor _notifier;
 
+    /**
+     * Notifies on the calling thread, which is what {@code createUser} has always done. Retained for
+     * callers constructing this directly; the authentication filters use the constructor below.
+     */
     public OpenIdUserResolver(final OpenIdAuthPlugin plugin, final XdatUserAuthService userAuthService) {
-        this(plugin, userAuthService, NOTIFIER);
+        this(plugin, userAuthService, Runnable::run);
     }
 
-    /** Test seam: run notifications on the caller's thread so they can be observed. */
-    OpenIdUserResolver(final OpenIdAuthPlugin plugin, final XdatUserAuthService userAuthService,
-                       final Executor notifier) {
+    /**
+     * Sends link notifications through {@code notifier} rather than on the authentication path, so a slow
+     * or unreachable mail server cannot add its latency to the request that links.
+     *
+     * <p>The filters pass XNAT's own {@code asyncTaskExecutor}. An earlier revision used a static
+     * single-threaded executor created here, which meant this class owned a thread for the life of the
+     * JVM — in a web application that keeps a reference to the deploying classloader, and its queue was
+     * unbounded. Taking the container's executor instead means the pool is sized by site preferences and
+     * shut down with the context, and nothing here has a lifecycle to manage.</p>
+     */
+    public OpenIdUserResolver(final OpenIdAuthPlugin plugin, final XdatUserAuthService userAuthService,
+                              final Executor notifier) {
         _plugin = plugin;
         _userAuthService = userAuthService;
         _notifier = notifier;
