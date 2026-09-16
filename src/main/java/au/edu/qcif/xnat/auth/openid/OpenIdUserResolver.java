@@ -13,6 +13,7 @@ import org.nrg.xdat.security.helpers.Users;
 import org.nrg.xdat.security.user.exceptions.UserNotFoundException;
 import org.nrg.xdat.services.XdatUserAuthService;
 import org.nrg.xdat.turbine.utils.AdminUtils;
+import org.nrg.xdat.turbine.utils.TurbineUtils;
 import org.nrg.xft.event.EventDetails;
 import org.nrg.xft.event.EventUtils;
 import org.nrg.xft.security.UserI;
@@ -232,16 +233,33 @@ public class OpenIdUserResolver {
         // links, and anything that throws while preparing the mail would fail a sign-in that had succeeded.
         _notifier.execute(() -> {
             try {
-                final String subject = "New sign-in method added to your account";
-                final String body = "The identity '" + username + "' from authentication provider '" + providerId
-                        + "' was linked to your XNAT account '" + account.getUsername() + "', so it can now be "
-                        + "used to sign in or reach the API as you. If you did not expect this, contact your "
-                        + "site administrator.";
-                AdminUtils.sendAdminEmail(account, subject, body);
+                final String login = account.getUsername();
+
+                // The administrator is not the account holder, so the copy they get is written about the
+                // account rather than to its owner -- and does not advise them to contact themselves.
+                // sendAdminEmail prefixes the site name and prepends host, user and time of its own.
+                AdminUtils.sendAdminEmail(account, "New sign-in method added for " + login,
+                                          "The identity '" + username + "' from authentication provider '"
+                                          + providerId + "' was linked to " + TurbineUtils.GetSystemName() + " account '" + login + "', which "
+                                          + "can now be used to sign in or reach the API as that user.");
+
                 final String recipient = account.getEmail();
                 if (StringUtils.isNotBlank(recipient)) {
                     XDAT.getMailService().sendHtmlMessage(XDAT.getSiteConfigPreferences().getAdminEmail(),
-                                                         recipient, subject, body);
+                                                          recipient,
+                                                          // Site name woven in rather than prefixed with a
+                                                          // colon: that is XNAT's convention for mail to a
+                                                          // person ("Welcome to X"), while the colon form is
+                                                          // for the administrator. It also tells someone with
+                                                          // accounts on several XNATs which one this is.
+                                                          "New sign-in method added to your "
+                                                          + TurbineUtils.GetSystemName() + " account",
+                                                          "The identity '" + username + "' from authentication "
+                                                          + "provider '" + providerId + "' was linked to your "
+                                                          + TurbineUtils.GetSystemName() + " account '" + login
+                                                          + "', so it can now be used to sign "
+                                                          + "in or reach the API as you. If you did not expect this, "
+                                                          + "contact your site administrator.");
                 }
             } catch (Exception e) {
                 // Only the plain arguments here: the account object is what may have failed, so reporting
