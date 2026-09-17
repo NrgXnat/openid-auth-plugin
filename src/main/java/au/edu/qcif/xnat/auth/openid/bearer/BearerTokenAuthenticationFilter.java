@@ -304,6 +304,16 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
                     providerId, path.prefix());
             return;
         }
+        if (XdatUserAuthService.LOCALDB.equals(sourceProvider)) {
+            // findLinkSource only searches OpenID mappings, so a localdb source never matches. It is also
+            // the wrong mechanism: a localdb account has a password, so XNAT's merge page can prove the
+            // person owns it, where linking proves only that a provider asserted the name.
+            log.warn("Provider '{}' enables linkExisting on the {} path against '{}', but only OpenID mappings "
+                            + "are searched, so this can never match. Local accounts are attached through XNAT's "
+                            + "account-merge page, which asks for the account's password.",
+                    providerId, path.prefix(), sourceProvider);
+            return;
+        }
         if (!_plugin.getEnabledProviders().contains(sourceProvider)) {
             // Not a defect on its own: linking against the leftover mappings of a decommissioned provider
             // is a legitimate migration. But usernamePatternOf would fall back to the shipped default for

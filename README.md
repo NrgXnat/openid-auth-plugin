@@ -370,6 +370,13 @@ openid.providerId.idToken.linkExisting.enabled=false
 The `provider.id` whose existing mappings are searched — the provider whose accounts this identity
 should be attached to.
 
+Must be another **OpenID** provider: only `openid` mappings are searched, so `localdb` never matches
+and is reported at startup. That is deliberate rather than a limitation. A local account has a
+password, so XNAT's account-merge page can make the person prove they own it before an external
+identity is attached; linking proves only that a provider asserted a name, which is why it is reserved
+for accounts the merge page cannot help — those this plugin provisioned, which have no password to
+enter.
+
 ### auto.enabled
 
 Standard XNAT provider attribute that sets the `enabled` property of new users. Set to `false` to require admins to manually enable users before allowing logins, set to `true` to allow immediate access.

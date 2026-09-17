@@ -129,6 +129,21 @@ public class BearerTokenAuthenticationFilterStartupTest {
     }
 
     @Test
+    public void reportsALocalDatabaseSourceAsUnmatchable() {
+        // Only OpenID mappings are searched, so localdb can never match however well the claim lines up
+        // with the account's username. It is a configured "provider", so the unconfigured-source check
+        // does not catch it, and without this it would fail per request rather than at boot.
+        providers(PROVIDER, SOURCE);
+        linkingFrom("localdb");
+        property(PROVIDER, "usernamePattern", "[upn]");
+
+        filter().onApplicationEvent(mock(ContextRefreshedEvent.class));
+
+        assertTrue(messagesAt(Level.WARN).stream()
+                                         .anyMatch(m -> m.contains("only OpenID mappings are searched")));
+    }
+
+    @Test
     public void reportsAPatternThatCannotMatchAcrossProviders() {
         providers(PROVIDER, SOURCE);
         linkingFrom(SOURCE);
