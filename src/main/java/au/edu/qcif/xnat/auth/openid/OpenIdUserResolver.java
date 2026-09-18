@@ -144,8 +144,11 @@ public class OpenIdUserResolver {
      * {@code auth_user} as the source row — every provider ends up keying this person identically,
      * which is what lets a third provider be added later by matching against either.</p>
      *
-     * <p>Fails closed and returns {@code null} — leaving the caller to deny the request — when there is
-     * no source mapping, when it names no XNAT account, or when that account cannot be loaded.</p>
+     * <p>Returns {@code null} when there is nothing to link to: no source mapping, one that names no XNAT
+     * account, or one naming an account that no longer exists. That is not a denial — the caller goes on to
+     * create an account or refuse, as configured. A source account that exists but cannot be loaded throws
+     * instead, because falling through there would provision a duplicate for someone who already has an
+     * account.</p>
      *
      * <p>What this does not do is prove that the person owns the XNAT account. The interactive equivalent
      * ({@code RegisterExternalLogin}) requires its password; this trusts that the provider asserted the
@@ -178,10 +181,20 @@ public class OpenIdUserResolver {
         final UserI existing;
         try {
             existing = Users.getUser(xdatUsername);
-        } catch (Exception e) {
-            log.warn("The '{}' mapping names XNAT account '{}', which could not be loaded; not linking.",
-                     sourceProvider, xdatUsername, e);
+        } catch (final UserNotFoundException absent) {
+            // A stale mapping naming an account that has since been removed. There is genuinely nothing to
+            // link to, so the caller may go on to create an account or deny, as it is configured to.
+            log.warn("The '{}' mapping names XNAT account '{}', which no longer exists; not linking.",
+                     sourceProvider, xdatUsername);
             return null;
+        } catch (final Exception e) {
+            // The account exists but could not be loaded. That is not "nothing to link to": returning null
+            // here lets the caller fall through to forceUserCreate, which -- when the source mapping names
+            // a different login than this provider resolves to -- provisions a second, permissionless
+            // account for someone who already has one, and writes a permanent mapping to it. Refuse.
+            log.error("The '{}' mapping names XNAT account '{}', which could not be loaded; refusing rather "
+                            + "than falling through to account creation.", sourceProvider, xdatUsername, e);
+            throw new AuthenticationServiceException("Could not load the XNAT account this identity links to");
         }
         XdatUserAuth link = new XdatUserAuth(username, XdatUserAuthService.OPENID, providerId);
         link.setXdatUsername(xdatUsername);
@@ -232,17 +245,19 @@ public class OpenIdUserResolver {
         // guard: a slow or unreachable mail server would otherwise add its latency to the one request that
         // links, and anything that throws while preparing the mail would fail a sign-in that had succeeded.
         _notifier.execute(() -> {
+            final String login;
             try {
-                final String login = account.getUsername();
+                login = account.getUsername();
+            } catch (Exception e) {
+                log.error("Linked '{}' on provider '{}', but could not read the account to notify anyone of it",
+                          username, providerId, e);
+                return;
+            }
 
-                // The administrator is not the account holder, so the copy they get is written about the
-                // account rather than to its owner -- and does not advise them to contact themselves.
-                // sendAdminEmail prefixes the site name and prepends host, user and time of its own.
-                AdminUtils.sendAdminEmail(account, "New sign-in method added for " + login,
-                                          "The identity '" + username + "' from authentication provider '"
-                                          + providerId + "' was linked to " + TurbineUtils.GetSystemName() + " account '" + login + "', which "
-                                          + "can now be used to sign in or reach the API as that user.");
-
+            // Separate attempts: the account holder's copy is the security-relevant one -- it is what turns
+            // an unexpected link into something they can report -- so it goes first and is not suppressed by
+            // a failure in the administrator's. Both are best-effort; the link is already committed.
+            try {
                 final String recipient = account.getEmail();
                 if (StringUtils.isNotBlank(recipient)) {
                     XDAT.getMailService().sendHtmlMessage(XDAT.getSiteConfigPreferences().getAdminEmail(),
@@ -262,9 +277,21 @@ public class OpenIdUserResolver {
                                                           + "contact your site administrator.");
                 }
             } catch (Exception e) {
-                // Only the plain arguments here: the account object is what may have failed, so reporting
-                // through it risks throwing from the handler itself.
-                log.error("Linked '{}' on provider '{}', but could not send notification of it",
+                log.error("Linked '{}' on provider '{}', but could not notify the account holder",
+                          username, providerId, e);
+            }
+
+            // The administrator is not the account holder, so this copy is written about the account rather
+            // than to its owner -- and does not advise them to contact themselves. sendAdminEmail prefixes
+            // the site name and prepends host, user and time of its own.
+            try {
+                AdminUtils.sendAdminEmail(account, "New sign-in method added for " + login,
+                                          "The identity '" + username + "' from authentication provider '"
+                                          + providerId + "' was linked to " + TurbineUtils.GetSystemName()
+                                          + " account '" + login + "', which can now be used to sign in or "
+                                          + "reach the API as that user.");
+            } catch (Exception e) {
+                log.error("Linked '{}' on provider '{}', but could not notify the site administrator",
                           username, providerId, e);
             }
         });

@@ -6,6 +6,10 @@ import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnitRunner;
 import org.nrg.xdat.entities.XdatUserAuth;
 import au.edu.qcif.xnat.auth.openid.gate.AuthPath;
+import org.nrg.mail.services.MailService;
+import org.nrg.xdat.preferences.SiteConfigPreferences;
+import org.nrg.xdat.security.user.exceptions.UserInitException;
+import org.nrg.xdat.security.user.exceptions.UserNotFoundException;
 import org.mockito.MockedStatic;
 import org.nrg.xdat.XDAT;
 import org.nrg.xdat.security.helpers.Users;
@@ -221,6 +225,39 @@ public class OpenIdUserResolverLinkTest {
         }
     }
 
+    // ---- what a source account that will not load means ------------------------------------------
+
+    @Test
+    public void doesNotLinkWhenTheSourceAccountNoLongerExists() {
+        // A stale mapping. There is genuinely nothing to link to, so the caller may go on to create an
+        // account or deny, as configured.
+        sourceMappingExists();
+        try (final MockedStatic<Users> users = mockStatic(Users.class, withSettings().lenient())) {
+            users.when(() -> Users.getUser(XNAT_LOGIN)).thenThrow(new UserNotFoundException(XNAT_LOGIN));
+
+            assertNull(resolver().linkExisting(PROVIDER, USERNAME, SOURCE_PROVIDER));
+        }
+    }
+
+    @Test
+    public void refusesWhenTheSourceAccountCannotBeLoaded() {
+        // Different from the above: the account exists, we just cannot read it. Returning null here would
+        // let the caller fall through to forceUserCreate and provision a second account for someone who
+        // already has one -- the outcome linking exists to prevent -- so it has to deny instead.
+        sourceMappingExists();
+        try (final MockedStatic<Users> users = mockStatic(Users.class, withSettings().lenient())) {
+            users.when(() -> Users.getUser(XNAT_LOGIN)).thenThrow(new UserInitException("cannot initialise"));
+
+            try {
+                resolver().linkExisting(PROVIDER, USERNAME, SOURCE_PROVIDER);
+                fail("an unloadable source account must deny, not fall through to account creation");
+            } catch (final AuthenticationException expected) {
+                assertTrue(expected.getMessage().toLowerCase().contains("could not load"));
+            }
+            verify(userAuthService, never()).create(org.mockito.ArgumentMatchers.any(XdatUserAuth.class));
+        }
+    }
+
     // ---- notification runs off the authentication path ---------------------------------------------
 
     /** A resolver whose notifications run on the calling thread, so they can be observed. */
@@ -249,6 +286,40 @@ public class OpenIdUserResolverLinkTest {
                     .linkExisting(PROVIDER, USERNAME, SOURCE_PROVIDER);
 
             assertEquals("exactly one notification should be queued", 1, submitted.size());
+        }
+    }
+
+    @Test
+    public void theAccountHolderIsStillNotifiedWhenTheAdministratorCopyFails() throws Exception {
+        // Both sends shared one try, administrator first, so a failure there silently skipped the holder's
+        // copy -- the half that lets someone report a link they did not expect.
+        sourceMappingExists();
+        final UserI account = mock(UserI.class);
+        lenient().when(account.getUsername()).thenReturn(XNAT_LOGIN);
+        lenient().when(account.getEmail()).thenReturn("a.person@example.org");
+
+        try (final MockedStatic<Users> users = mockStatic(Users.class, withSettings().lenient());
+             final MockedStatic<AdminUtils> admin = mockStatic(AdminUtils.class, withSettings().lenient());
+             final MockedStatic<XDAT> xdat = mockStatic(XDAT.class, withSettings().lenient())) {
+
+            users.when(() -> Users.getUser(XNAT_LOGIN)).thenReturn(account);
+            admin.when(() -> AdminUtils.sendAdminEmail(org.mockito.ArgumentMatchers.any(UserI.class),
+                                                       org.mockito.ArgumentMatchers.anyString(),
+                                                       org.mockito.ArgumentMatchers.anyString()))
+                 .thenThrow(new RuntimeException("admin from-address rejected"));
+
+            final MailService mail = mock(MailService.class);
+            final SiteConfigPreferences prefs = mock(SiteConfigPreferences.class);
+            lenient().when(prefs.getAdminEmail()).thenReturn("site-admin@example.org");
+            xdat.when(XDAT::getMailService).thenReturn(mail);
+            xdat.when(XDAT::getSiteConfigPreferences).thenReturn(prefs);
+
+            resolverNotifyingInline().linkExisting(PROVIDER, USERNAME, SOURCE_PROVIDER);
+
+            verify(mail).sendHtmlMessage(org.mockito.ArgumentMatchers.anyString(),
+                                         org.mockito.ArgumentMatchers.anyString(),
+                                         org.mockito.ArgumentMatchers.anyString(),
+                                         org.mockito.ArgumentMatchers.anyString());
         }
     }
 
