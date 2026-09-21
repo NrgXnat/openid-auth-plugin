@@ -19,6 +19,17 @@ Adds OpenID Connect (OIDC) authentication support to XNAT.
     * Successful bearer authentications publish a Spring Security authentication-success event and write an XNAT `AccessLogger` audit entry, matching the interactive path.
     * The path is stateless and short-circuits when the request is already authenticated. Auto-create honors `openid.<providerId>.bearer.forceUserCreate`, falling back to `openid.<providerId>.forceUserCreate`.
     * Statelessness is enforced on two fronts: the authentication token is `@Transient` so Spring's `SecurityContextPersistenceFilter` does not persist it, and the successful request is continued behind a wrapper that prevents downstream filters (e.g. XNAT's `XnatExpiredPasswordFilter`, which calls `request.getSession()` unconditionally) from making the container create a session — so no `JSESSIONID` cookie is emitted.
+* Added an opt-in **account-linking** policy (`openid.<providerId>.linkExisting.enabled`): on a mapping miss, the identity is attached to the XNAT account that another provider's mapping already names, instead of being refused or given a second, permissionless account.
+    * `openid.<providerId>.linkExisting.sourceProvider` is required and names the provider whose accounts already exist. There is no fallback to "any mapping with this name."
+    * Matching is on the value each provider's `usernamePattern` resolves to, compared against the source provider's `auth_user`. The comparison is case-sensitive.
+    * Applies to both the interactive and bearer paths, configured once per provider or scoped per path like the claim gates. Off by default; never creates accounts; grants nothing — the linked account's project membership is unchanged.
+    * Both the account holder and the site administrator are emailed when a link is made, off the authentication path.
+    * Configurations that cannot match — either side keyed on `[providerId]` or `[sub]`, or a source provider that is not configured — are reported at startup.
+* `usernamePattern` can now name a claim by URI, e.g. `[https://example.org/upn]`. Providers that namespace custom claims (Auth0 among them) emit them under names the previous placeholder syntax — letters, digits and underscore only — could not express.
+
+#### 1.6.0 - Fixes
+* Account creation now refuses when a provider's `usernamePattern` resolves to a login an XNAT account already holds and no mapping links the two. Previously this reached `Users.save`, which takes its update branch for an existing login and discards the new mapping, so the sign-in appeared to succeed while silently modifying an unrelated account. **This changes behaviour for existing deployments** that have a colliding `usernamePattern` and `forceUserCreate` on: those logins used to go through and now fail, with the collision named in the log. Configure `linkExisting.sourceProvider` to attach deliberately, or change the pattern so it stops colliding.
+
 
 ## <a name="1.5.0"></a>OpenID Authentication Plugin Version 1.5.x Release Notes
 **BREAKING CHANGE:** 1.5.0 is compiled in Java21 and has dependency updates that require XNAT 1.10.0. 

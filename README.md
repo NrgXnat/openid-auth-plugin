@@ -272,6 +272,54 @@ Whether to auto-create an XNAT account for a validated bearer-token identity tha
 mapping. If unset, falls back to the shared `openid.providerId.forceUserCreate`. When neither is
 `true`, an unmapped identity is denied with 403.
 
+#### openid.`providerId`.linkExisting.enabled
+
+Whether to attach an authenticated identity with no mapping of its own to the XNAT account that
+**another** provider's mapping already names. This might be useful if a site needs to migrate from one provider to another, or if a site wants to allow an external application (e.g., a viewer) to authenticate as an XNAT user
+Default`false`. Requires `linkExisting.sourceProvider`.
+
+Like the claim gates, this resolves per path: `openid.providerId.linkExisting.*` applies to both the
+interactive browser login and the bearer path, and a path-scoped
+`openid.providerId.bearer.linkExisting.*` or `openid.providerId.idToken.linkExisting.*` overrides it.
+
+A user identity (defined by `usernamePattern` per provider) must match across the linked providers.
+
+Note:
+
+- **The lookup is case-sensitive.** Mappings are matched with an exact string comparison.
+
+- **Ensure the provider is trustworthy** XNAT's own account-merge flow
+ (`RegisterExternalLogin`) makes the person prove they own the XNAT account by entering its password.
+ Linking on an asserted identity proves only that the provider asserted it, so it is exactly as
+ trustworthy as the provider presenting the token.
+
+##### What happens to an identity with no mapping yet?
+
+With linking configured, an authenticated identity that has no mapping of its own resolves in this
+order:
+
+1. **Link** to the account another provider already maps, if `linkExisting` is enabled for this
+   provider on this path.
+2. **Create** a new account, if `forceUserCreate` is set.
+3. On the interactive path only, **divert to the account merge page**, where the person proves they own
+   an existing XNAT account by entering its password. On the bearer path there is nobody to ask, so this
+   step does not exist and the request is denied with 403.
+
+Linking is first for two reasons. It keeps one person on one XNAT account — without it, a second
+provider plus `forceUserCreate` hands someone who already has an account a second, permissionless one.
+And it reaches people the merge page cannot: oidc accounts have no local password,
+so for those users the merge page is a dead end.
+
+A successful link **notifies** the account holder and the site administrator. 
+
+#### openid.`providerId`.linkExisting.sourceProvider
+
+The `provider.id` whose existing mappings are searched — the provider whose accounts this identity
+should be attached to.
+
+Must be another **OpenID** provider: only `openid` mappings are searched, so `localdb` never matches
+and is reported at startup. 
+
 ### auto.enabled
 
 Standard XNAT provider attribute that sets the `enabled` property of new users. Set to `false` to require admins to manually enable users before allowing logins, set to `true` to allow immediate access.
@@ -294,7 +342,15 @@ Flag to enable the PKCE feature in the authorization code grant flow
 
 ### openid.`providerId`.usernamePattern
 
-Default pattern to define `auth_user` field of the `xhbm_xdat_user_auth` table
+Default pattern to define `auth_user` field of the `xhbm_xdat_user_auth` table.
+
+Each `[claimName]` placeholder is replaced with that claim's value from the token — for example
+`[providerId]_[sub]` or `[upn]`. A claim name may be a URI as well as a bare name, since
+some providers require namespacing a custom claim.
+
+Note that a placeholder ends at the first `]`, so a claim name cannot itself contain one. Claim names
+matching a field of `OpenIdConnectUserDetails` — `email`, `firstName`, `lastName`, `username` — cannot
+be used, because those are populated after the pattern is resolved and would read as empty.
 
 ### openid.`providerId`.idTokenEncryptionAlgorithm
 

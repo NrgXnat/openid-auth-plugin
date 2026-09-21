@@ -151,6 +151,6 @@ public class OpenIdConnectFilterTestConfig {
                                                    final KeystoreService keystoreService,
                                                    final OpenIdAuthPlugin openIdAuthPlugin,
                                                    final AuthenticationEventPublisher authenticationEventPublisher) {
-        return new OpenIdConnectFilter(openIdAuthPlugin, authenticationEventPublisher, userAuthService(), siteConfigPreferences, keystoreService);
+        return new OpenIdConnectFilter(openIdAuthPlugin, authenticationEventPublisher, userAuthService(), siteConfigPreferences, keystoreService, Runnable::run);
     }
 }

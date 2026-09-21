@@ -62,6 +62,7 @@ import au.edu.qcif.xnat.auth.openid.utils.OpenIdUtils;
 import org.nrg.xdat.XDAT;
 import org.springframework.beans.factory.annotation.Qualifier;
 import java.util.Optional;
+import java.util.concurrent.Executor;
 import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.LOGOUT_URI;
 import org.nrg.xnat.security.OnXnatLogin;
 
@@ -117,11 +118,17 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
     private static final String DEFAULT_REDIRECT_URI = "/openid/callback";
     private static final String USER_INFO_URI = "userInfoUri";
 
+    /**
+     * XNAT's own {@code asyncTaskExecutor}, taken by name: it declares two beans implementing
+     * {@code AsyncTaskExecutor} (this one and the task scheduler), so by-type injection is ambiguous.
+     */
+    @Autowired
     public OpenIdConnectFilter(final OpenIdAuthPlugin plugin,
                                final AuthenticationEventPublisher eventPublisher,
                                final XdatUserAuthService userAuthService,
                                final SiteConfigPreferences siteConfigPreferences,
-                               final KeystoreService keystoreService) {
+                               final KeystoreService keystoreService,
+                               @Qualifier("asyncTaskExecutor") final Executor notifier) {
         super(plugin.getRedirectUri());
         log.debug("Creating filter for URL {}", plugin.getRedirectUri());
         setAuthenticationManager(new NoopAuthenticationManager());
@@ -129,7 +136,23 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         _eventPublisher = eventPublisher;
         _keystoreService = keystoreService;
         _gateFactory = new ClaimGateFactory(plugin);
-        _userResolver = new OpenIdUserResolver(plugin, userAuthService);
+        _userResolver = new OpenIdUserResolver(plugin, userAuthService, notifier);
+        _accountPolicy = new OpenIdAccountPolicy(plugin, siteConfigPreferences);
+    }
+
+    /** Test seam: inject the user resolver so the missing-mapping branches can be driven directly. */
+    OpenIdConnectFilter(final OpenIdAuthPlugin plugin,
+                        final AuthenticationEventPublisher eventPublisher,
+                        final SiteConfigPreferences siteConfigPreferences,
+                        final KeystoreService keystoreService,
+                        final OpenIdUserResolver userResolver) {
+        super(plugin.getRedirectUri());
+        setAuthenticationManager(new NoopAuthenticationManager());
+        _plugin = plugin;
+        _eventPublisher = eventPublisher;
+        _keystoreService = keystoreService;
+        _gateFactory = new ClaimGateFactory(plugin);
+        _userResolver = userResolver;
         _accountPolicy = new OpenIdAccountPolicy(plugin, siteConfigPreferences);
     }
 
@@ -175,6 +198,23 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
             if (requestProviderId != null && !requestProviderId.equals(sessionProviderId)) {
                 log.debug("Found a session that had previously stopped during the OAuth/OIDC authentication process. Deleting the session.");
                 request.getSession().invalidate();
+            }
+        }
+
+        // The provider is chosen on the outbound request (?providerId=...) and kept in the session,
+        // because the callback carries only OAuth parameters. Neither present means this session never
+        // started the flow -- most often because the sign-in began on a different host than the
+        // configured siteUrl, so the callback arrived in a new, empty session. There is then no token
+        // endpoint to exchange the code against, and attempting it anyway stalls with nothing logged.
+        if (request.getParameter("providerId") == null) {
+            final HttpSession current = request.getSession(false);
+            if (current == null || current.getAttribute("providerId") == null) {
+                log.error("No OpenID provider for this request: no 'providerId' parameter, and none "
+                                + "recorded in the session. If the sign-in started on a different host than "
+                                + "the configured siteUrl ('{}'), the callback arrives in a new session and "
+                                + "the flow cannot continue.",
+                        _plugin.getProps().getProperty("siteUrl"));
+                throw new BadCredentialsException("Could not determine the OpenID provider for this request");
             }
         }
 
@@ -247,14 +287,9 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
             requesterUsername = user.getUsername();
             xdatUser = _userResolver.resolveExisting(requesterUsername, providerId);
         } catch (UsernameAuthMappingNotFoundException e) {
-            if (Boolean.parseBoolean(_plugin.getProperty(providerId, "forceUserCreate"))) {
-                xdatUser = _userResolver.createUser(providerId, user);
-            } else {
-                // Give users an option to register or connect OpenID Account with an XNAT account
-                log.info("User {} attempted to log using authentication provider ID {}, diverting to account merge page.", user.getUsername(), providerId);
-                request.getSession().setAttribute(UsernameAuthMappingNotFoundException.class.getSimpleName(), new UsernameAuthMappingNotFoundException(e.getUsername(), e.getAuthMethod(), e.getAuthMethodId(), user.getEmail(), user.getLastname(), user.getFirstname()));
-                response.sendRedirect(TurbineUtils.GetFullServerPath() + "/app/template/RegisterExternalLogin.vm");
-                return null;
+            xdatUser = resolveOnMissingMapping(providerId, user, requesterUsername, e, request, response);
+            if (xdatUser == null) {
+                return null; // diverted to the account merge page
             }
         }
         if (!xdatUser.isEnabled()) {
@@ -402,6 +437,45 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
             signedJWT = SignedJWT.parse(idToken);
         }
         return new TokenContext(signedJWT.getJWTClaimsSet(), signedJWT.getHeader().toJSONObject());
+    }
+
+    /**
+     * Decides what an authenticated identity with no {@code (auth_user, openid, providerId)} mapping
+     * becomes, in this order:
+     *
+     * <ol>
+     *   <li><b>Link</b> to the account another provider already maps, when {@code linkExisting} is
+     *       configured for this provider on the interactive path. Preferred over both alternatives: it
+     *       keeps one person on one account, and unlike the merge page it works for someone whose account
+     *       this plugin provisioned and who therefore has no local password to enter.</li>
+     *   <li><b>Create</b> a new account, when {@code forceUserCreate} is set.</li>
+     *   <li><b>Divert</b> to the account merge page, where the person can prove ownership of an existing
+     *       XNAT account with its password.</li>
+     * </ol>
+     *
+     * @return the resolved user, or {@code null} when the response has been redirected to the merge page
+     *         and the caller should stop.
+     */
+    private UserI resolveOnMissingMapping(final String providerId, final OpenIdConnectUserDetails user,
+                                          final String requesterUsername,
+                                          final UsernameAuthMappingNotFoundException notFound,
+                                          final HttpServletRequest request, final HttpServletResponse response)
+            throws AuthenticationException, IOException {
+        final UserI linked = _userResolver.linkExistingIfConfigured(providerId, AuthPath.ID_TOKEN, requesterUsername);
+        if (linked != null) {
+            return linked;
+        }
+        if (Boolean.parseBoolean(_plugin.getProperty(providerId, "forceUserCreate"))) {
+            return _userResolver.createUser(providerId, user);
+        }
+        // Give users an option to register or connect OpenID Account with an XNAT account
+        log.info("User {} attempted to log using authentication provider ID {}, diverting to account merge page.",
+                user.getUsername(), providerId);
+        request.getSession().setAttribute(UsernameAuthMappingNotFoundException.class.getSimpleName(),
+                new UsernameAuthMappingNotFoundException(notFound.getUsername(), notFound.getAuthMethod(),
+                        notFound.getAuthMethodId(), user.getEmail(), user.getLastname(), user.getFirstname()));
+        response.sendRedirect(TurbineUtils.GetFullServerPath() + "/app/template/RegisterExternalLogin.vm");
+        return null;
     }
 
     private boolean isIdTokenEncrypted(final String idToken) {

@@ -23,11 +23,14 @@ import org.nrg.xdat.services.XdatUserAuthService;
 import org.nrg.xdat.turbine.utils.AccessLogger;
 import org.nrg.xft.security.UserI;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.security.authentication.AuthenticationEventPublisher;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.web.session.SessionManagementFilter;
+import org.springframework.context.ApplicationListener;
+import org.springframework.context.event.ContextRefreshedEvent;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
@@ -42,10 +45,15 @@ import java.text.ParseException;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.Executor;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
 import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.ISSUER;
 import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.JWKS_URI;
+import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.USERNAME_PATTERN;
 
 /**
  * Authenticates REST callers that present {@code Authorization: Bearer <jwt>}, where the JWT is an
@@ -109,7 +117,8 @@ import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.JWKS_URI;
  */
 @Slf4j
 @Component
-public class BearerTokenAuthenticationFilter extends OncePerRequestFilter {
+public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
+        implements ApplicationListener<ContextRefreshedEvent> {
 
     /**
      * Value of Spring Security's package-private {@code SessionManagementFilter.FILTER_APPLIED}
@@ -128,6 +137,9 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter {
      * fail loudly at startup (field removed/renamed) instead of silently re-introducing the leak.</p>
      */
     private static final String SESSION_MGMT_FILTER_APPLIED = resolveSessionMgmtFilterAppliedKey();
+
+    /** The placeholders whose value cannot be equal under two providers. */
+    private static final Pattern UNMATCHABLE_PLACEHOLDER = Pattern.compile("\\[(providerId|sub)]");
 
     private static String resolveSessionMgmtFilterAppliedKey() {
         try {
@@ -151,12 +163,19 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter {
     private final OpenIdUserResolver _userResolver;
     private final OpenIdAccountPolicy _accountPolicy;
     private final AuthenticationEventPublisher _eventPublisher;
+    /** Guards against the repeated refresh events a parent/child context hierarchy produces. */
+    private final AtomicBoolean _configReported = new AtomicBoolean();
 
+    /**
+     * XNAT's own {@code asyncTaskExecutor}, taken by name: it declares two beans implementing
+     * {@code AsyncTaskExecutor} (this one and the task scheduler), so by-type injection is ambiguous.
+     */
     @Autowired
     public BearerTokenAuthenticationFilter(final OpenIdAuthPlugin plugin,
                                            final XdatUserAuthService userAuthService,
                                            final SiteConfigPreferences siteConfigPreferences,
-                                           final AuthenticationEventPublisher eventPublisher) {
+                                           final AuthenticationEventPublisher eventPublisher,
+                                           @Qualifier("asyncTaskExecutor") final Executor notifier) {
         // Build the provider resolver once and derive the validators from it, so the eligible-provider
         // config is scanned (and any fail-closed errors logged) a single time at startup.
         _plugin = plugin;
@@ -164,10 +183,27 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter {
         _providerResolver = new BearerProviderResolver(plugin);
         _validators = buildValidators(_providerResolver, plugin);
         _gateFactory = new ClaimGateFactory(plugin);
-        _userResolver = new OpenIdUserResolver(plugin, userAuthService);
+        _userResolver = new OpenIdUserResolver(plugin, userAuthService, notifier);
         _accountPolicy = new OpenIdAccountPolicy(plugin, siteConfigPreferences);
         _eventPublisher = eventPublisher;
-        warnIfAudienceGateUnconfigured();
+    }
+
+    /**
+     * Reports configuration problems once the context is up, rather than while this bean is being
+     * constructed.
+     *
+     * <p>XNAT applies a plugin's own logging configuration part-way through initialisation, after beans
+     * like this one exist. Anything logged from the constructor therefore goes to a logger that has not
+     * been configured yet, inherits the server's {@code ERROR} root level, and is discarded — so these
+     * checks ran and said nothing. Deferring them to context-refresh puts the output where the plugin's
+     * logging configuration sends it, at the level it sets.</p>
+     */
+    @Override
+    public void onApplicationEvent(final ContextRefreshedEvent event) {
+        if (_configReported.compareAndSet(false, true)) {
+            warnIfAudienceGateUnconfigured();
+            warnIfLinkExistingCannotMatch();
+        }
     }
 
     /** Test seam: inject pre-built collaborators (offline validators, fake resolvers). */
@@ -222,6 +258,110 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter {
                         providerId, providerId, providerId);
             }
         }
+    }
+
+    /**
+     * Warns at startup for any bearer provider whose {@code linkExisting} configuration cannot match
+     * anything, so the operator learns it at boot rather than from an unexplained 403 on every call.
+     *
+     * <p>Linking compares this provider's {@code usernamePattern} output against the source provider's
+     * {@code auth_user}, which is <em>its</em> {@code usernamePattern} output. Exactly two placeholders
+     * make that comparison impossible, wherever they appear and whatever else the pattern contains:</p>
+     * <ul>
+     *   <li><b>{@code [providerId]}</b>, which is the provider's own id, so two providers embed different
+     *       values for the same person by definition.</li>
+     *   <li><b>{@code [sub]}</b>, which is scoped to its issuer — and for Entra, to the individual
+     *       application — so two providers never see the same value.</li>
+     * </ul>
+     *
+     * <p>Being <em>composite</em> is not itself a defect: {@code [upn]} on one side and
+     * {@code [preferred_username]@[domain]} on the other can resolve to the same string. Patterns that
+     * merely differ get an informational note instead, since only the operator can confirm that two
+     * claims carry the same value — the normal case when a broker re-emits an upstream claim.</p>
+     */
+    private void warnIfLinkExistingCannotMatch() {
+        // Every configured provider on both paths, not just the bearer-eligible ones: linking is shared
+        // now, so an interactive-only provider can enable it too. This validation would sit better on a
+        // component that owns provider config; it lives here because this is the only class with a
+        // startup hook that already walks the provider list.
+        for (final String providerId : _plugin.getEnabledProviders()) {
+            for (final AuthPath path : AuthPath.values()) {
+                validateLinkExisting(providerId, path);
+            }
+        }
+    }
+
+    /** Reports a {@code linkExisting} configuration on one (provider, path) that cannot ever match. */
+    private void validateLinkExisting(final String providerId, final AuthPath path) {
+        final GateConfig config = new GateConfig(_plugin, providerId, path);
+        if (!config.enabled("linkExisting")) {
+            return;
+        }
+        final String sourceProvider = StringUtils.trimToNull(config.value("linkExisting.sourceProvider"));
+        if (sourceProvider == null) {
+            log.error("Provider '{}' enables linkExisting on the {} path but sets no "
+                    + "linkExisting.sourceProvider; no linking will be attempted until it is set.",
+                    providerId, path.prefix());
+            return;
+        }
+        if (XdatUserAuthService.LOCALDB.equals(sourceProvider)) {
+            // findLinkSource only searches OpenID mappings, so a localdb source never matches. It is also
+            // the wrong mechanism: a localdb account has a password, so XNAT's merge page can prove the
+            // person owns it, where linking proves only that a provider asserted the name.
+            log.warn("Provider '{}' enables linkExisting on the {} path against '{}', but only OpenID mappings "
+                            + "are searched, so this can never match. Local accounts are attached through XNAT's "
+                            + "account-merge page, which asks for the account's password.",
+                    providerId, path.prefix(), sourceProvider);
+            return;
+        }
+        if (!_plugin.getEnabledProviders().contains(sourceProvider)) {
+            // Not a defect on its own: linking against the leftover mappings of a decommissioned provider
+            // is a legitimate migration. But usernamePatternOf would fall back to the shipped default for
+            // it and blame [providerId], which sends the operator after the wrong thing.
+            log.warn("Provider '{}' enables linkExisting on the {} path against '{}', which is not a configured "
+                            + "provider. Linking will still match against any mappings that provider left "
+                            + "behind; if that is not intended, check the id for a typo.",
+                    providerId, path.prefix(), sourceProvider);
+            return;
+        }
+        final String ownPattern = usernamePatternOf(providerId);
+        final String sourcePattern = usernamePatternOf(sourceProvider);
+
+        final String unmatchable = unmatchablePlaceholder(ownPattern, sourcePattern);
+        if (unmatchable != null) {
+            log.warn("Provider '{}' enables linkExisting against '{}' on the {} path, but one of their "
+                            + "usernamePatterns ('{}' and '{}') is keyed on '{}', whose value cannot be the same "
+                            + "under two providers: providerId is the provider's own id, and sub is scoped to its "
+                            + "issuer — for Entra, to the individual application. No link attempt can ever match. "
+                            + "Re-key both onto a claim that is stable across providers, such as oid, and migrate "
+                            + "existing mappings before enabling this.",
+                    providerId, sourceProvider, path.prefix(), ownPattern, sourcePattern, unmatchable);
+        } else if (!ownPattern.equals(sourcePattern)) {
+            log.info("Provider '{}' keys accounts on '{}' while source provider '{}' keys on '{}', for linking on "
+                            + "the {} path. That is fine when both resolve to the same value; verify that they do. "
+                            + "A provider configured with the shared key reports once per path.",
+                    providerId, ownPattern, sourceProvider, sourcePattern, path.prefix());
+        }
+    }
+
+    /**
+     * The first of the two cross-provider-impossible placeholders named by any of {@code patterns}, or
+     * {@code null} if none of them names one.
+     */
+    static String unmatchablePlaceholder(final String... patterns) {
+        for (final String pattern : patterns) {
+            final Matcher matcher = UNMATCHABLE_PLACEHOLDER.matcher(pattern);
+            if (matcher.find()) {
+                return matcher.group(1);
+            }
+        }
+        return null;
+    }
+
+    /** A provider's configured {@code usernamePattern}, falling back as {@code resolvePattern} does. */
+    private String usernamePatternOf(final String providerId) {
+        return StringUtils.defaultIfBlank(_plugin.getProperty(providerId, USERNAME_PATTERN),
+                                          OpenIdConnectUserDetails.DEFAULT_USERNAME_PATTERN);
     }
 
     @Override
@@ -372,12 +512,34 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter {
         }
     }
 
-    /** Looks up the mapped XNAT user, auto-creating it when configured; writes 403 and returns null on failure. */
+    /**
+     * Looks up the mapped XNAT user; on a miss, links to an existing account or auto-creates one when
+     * either is configured. Writes 403 and returns null on failure.
+     *
+     * <p>Linking is attempted before auto-creation, deliberately: when both are enabled, attaching this
+     * identity to the account the person already has is always preferable to provisioning a second,
+     * permissionless duplicate for the same human.</p>
+     */
     private UserI resolveUser(final String providerId, final OpenIdConnectUserDetails user,
                               final HttpServletResponse response) throws IOException {
         try {
             return _userResolver.resolveExisting(user.getUsername(), providerId);
         } catch (final UsernameAuthMappingNotFoundException notFound) {
+            final UserI linked;
+            try {
+                linked = _userResolver.linkExistingIfConfigured(providerId, AuthPath.BEARER, user.getUsername());
+            } catch (final AuthenticationException e) {
+                // The identity matched an eligible account but the mapping could not be saved. Deny rather
+                // than falling through to auto-creation: a link that should have succeeded must not
+                // silently become a duplicate account for someone who already has one.
+                log.warn("Failed to link '{}' on provider '{}' to an existing XNAT account",
+                        user.getUsername(), providerId, e);
+                forbidden(response, "could not link this identity to an existing XNAT account");
+                return null;
+            }
+            if (linked != null) {
+                return linked;
+            }
             if (!isForceUserCreate(providerId)) {
                 log.info("No XNAT account mapped to '{}' for provider '{}' and auto-create is off; denying",
                         user.getUsername(), providerId);

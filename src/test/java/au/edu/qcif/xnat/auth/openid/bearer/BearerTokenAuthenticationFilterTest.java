@@ -4,6 +4,7 @@ import au.edu.qcif.xnat.auth.openid.OpenIdAccountPolicy;
 import au.edu.qcif.xnat.auth.openid.OpenIdAuthPlugin;
 import au.edu.qcif.xnat.auth.openid.OpenIdUserResolver;
 import au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant;
+import au.edu.qcif.xnat.auth.openid.gate.AuthPath;
 import au.edu.qcif.xnat.auth.openid.gate.ClaimGateFactory;
 import au.edu.qcif.xnat.auth.openid.tokens.OpenIdAuthToken;
 import com.nimbusds.jose.JWSAlgorithm;
@@ -32,6 +33,7 @@ import org.springframework.mock.web.MockFilterChain;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.security.authentication.AuthenticationEventPublisher;
+import org.springframework.security.authentication.AuthenticationServiceException;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 
@@ -52,6 +54,8 @@ import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -299,6 +303,82 @@ public class BearerTokenAuthenticationFilterTest {
         assertNull(currentAuth());
     }
 
+    // ---- linkExisting: attaching a second provider to an account someone already has -------------
+    // Config handling now lives in OpenIdUserResolver (shared by both auth paths), so these cover the
+    // filter's side of the contract: what it does with each outcome the resolver can return.
+
+    private void mappingMisses() {
+        when(userResolver.resolveExisting(USERNAME, PROVIDER))
+                .thenThrow(new UsernameAuthMappingNotFoundException(USERNAME, XdatUserAuthService.OPENID, PROVIDER, null, null, null));
+    }
+
+    private static UserI usableAccount(final String login) {
+        final UserI account = mock(UserI.class);
+        lenient().when(account.getUsername()).thenReturn(login);
+        when(account.isEnabled()).thenReturn(true);
+        when(account.isAccountNonLocked()).thenReturn(true);
+        return account;
+    }
+
+    @Test
+    public void unmappedIdentityIsLinkedToTheAccountTheSourceProviderNames() throws Exception {
+        final UserI linked = usableAccount("jsmith");
+        mappingMisses();
+        when(userResolver.linkExistingIfConfigured(PROVIDER, AuthPath.BEARER, USERNAME)).thenReturn(linked);
+        bearer(sign(signingKey, validClaims().build()));
+
+        doFilter();
+
+        assertNotNull("chain must run for a linked identity", chain.getRequest());
+        assertSame(linked, currentAuth().getPrincipal());
+    }
+
+    @Test
+    public void linkingIsPreferredOverAutoCreatingADuplicate() throws Exception {
+        // Both available: the person already has an account, so they must be linked to it rather than
+        // handed a second, permissionless one.
+        final UserI linked = usableAccount("jsmith");
+        lenient().when(plugin.getProperty(PROVIDER, "forceUserCreate")).thenReturn("true");
+        mappingMisses();
+        when(userResolver.linkExistingIfConfigured(PROVIDER, AuthPath.BEARER, USERNAME)).thenReturn(linked);
+        bearer(sign(signingKey, validClaims().build()));
+
+        doFilter();
+
+        assertSame(linked, currentAuth().getPrincipal());
+        verify(userResolver, never()).createUser(org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    public void nothingToLinkAndNoAutoCreateIsForbidden() throws Exception {
+        mappingMisses();
+        when(userResolver.linkExistingIfConfigured(PROVIDER, AuthPath.BEARER, USERNAME)).thenReturn(null);
+        bearer(sign(signingKey, validClaims().build()));
+
+        doFilter();
+
+        assertEquals(HttpServletResponse.SC_FORBIDDEN, response.getStatus());
+        assertNull(chain.getRequest());
+        assertNull(currentAuth());
+    }
+
+    @Test
+    public void aFailedSaveDeniesRatherThanFallingThroughToAutoCreate() throws Exception {
+        lenient().when(plugin.getProperty(PROVIDER, "forceUserCreate")).thenReturn("true");
+        mappingMisses();
+        when(userResolver.linkExistingIfConfigured(PROVIDER, AuthPath.BEARER, USERNAME))
+                .thenThrow(new AuthenticationServiceException("boom"));
+        bearer(sign(signingKey, validClaims().build()));
+
+        doFilter();
+
+        assertEquals(HttpServletResponse.SC_FORBIDDEN, response.getStatus());
+        assertNull(currentAuth());
+        verify(userResolver, never()).createUser(org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.any());
+    }
+
     @Test
     public void disabledAccountIsForbidden() throws Exception {
         final UserI disabled = mock(UserI.class);
@@ -364,5 +444,43 @@ public class BearerTokenAuthenticationFilterTest {
 
         assertNotNull("chain should be invoked", chain.getRequest());
         org.mockito.Mockito.verify(eventPublisher).publishAuthenticationSuccess(org.mockito.ArgumentMatchers.any());
+    }
+
+    // ---- which usernamePattern pairs can never match --------------------------------------------
+
+    /**
+     * Only {@code providerId} and {@code sub} make two providers' patterns incomparable. Being composite
+     * does not: the earlier check tested for "is this one whole claim", which warned that working
+     * configurations could never match and stayed silent on a bare {@code [providerId]}, which cannot.
+     */
+    @Test
+    public void namesTheProviderIdPlaceholderWhereverItAppears() {
+        assertEquals("providerId", BearerTokenAuthenticationFilter.unmatchablePlaceholder("[providerId]_[sub]"));
+        assertEquals("providerId", BearerTokenAuthenticationFilter.unmatchablePlaceholder("[providerId]"));
+        assertEquals("providerId",
+                     BearerTokenAuthenticationFilter.unmatchablePlaceholder("[upn]", "x-[providerId]-y"));
+    }
+
+    @Test
+    public void namesTheSubPlaceholderWhereverItAppears() {
+        assertEquals("sub", BearerTokenAuthenticationFilter.unmatchablePlaceholder("[sub]"));
+        assertEquals("sub", BearerTokenAuthenticationFilter.unmatchablePlaceholder("[upn]", "[sub]"));
+    }
+
+    @Test
+    public void acceptsCompositePatternsThatCouldResolveToTheSameValue() {
+        // [upn] and [preferred_username]@[domain] can be the same string, so this is the operator's
+        // call to verify, not something to refuse at startup. ([email] would be the natural example
+        // but cannot be referenced at all -- see the usernamePattern notes in the README.)
+        assertNull(BearerTokenAuthenticationFilter.unmatchablePlaceholder("[upn]",
+                                                                          "[preferred_username]@[domain]"));
+        assertNull(BearerTokenAuthenticationFilter.unmatchablePlaceholder("[https://example.org/upn]",
+                                                                          "[preferred_username]"));
+    }
+
+    @Test
+    public void doesNotMatchAClaimMerelyContainingTheWord() {
+        // 'subject' and 'my_providerId' are ordinary claim names; only the exact placeholders count.
+        assertNull(BearerTokenAuthenticationFilter.unmatchablePlaceholder("[subject]", "[my_providerId]"));
     }
 }

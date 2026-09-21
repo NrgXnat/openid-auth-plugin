@@ -1,0 +1,417 @@
+package au.edu.qcif.xnat.auth.openid;
+
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.mockito.Mock;
+import org.mockito.junit.MockitoJUnitRunner;
+import org.nrg.xdat.entities.XdatUserAuth;
+import au.edu.qcif.xnat.auth.openid.gate.AuthPath;
+import org.nrg.mail.services.MailService;
+import org.nrg.xdat.preferences.SiteConfigPreferences;
+import org.nrg.xdat.security.user.exceptions.UserInitException;
+import org.nrg.xdat.security.user.exceptions.UserNotFoundException;
+import org.mockito.MockedStatic;
+import org.nrg.xdat.XDAT;
+import org.nrg.xdat.security.helpers.Users;
+import org.nrg.xdat.services.XdatUserAuthService;
+import org.nrg.xdat.turbine.utils.AdminUtils;
+import org.nrg.xft.security.UserI;
+import org.springframework.security.core.AuthenticationException;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.mockStatic;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.withSettings;
+
+/**
+ * Unit tests for {@link OpenIdUserResolver#findLinkSource}: locating the existing provider's mapping
+ * whose XNAT account a second provider's identity would be attached to. The lookup must be exact on
+ * {@code (matchValue, OPENID, sourceProvider)} — a near miss has to stay a miss, because a loose match
+ * here is what would attach one person's provider identity to another person's XNAT account.
+ *
+ * <p>{@link OpenIdUserResolver#linkExisting} is covered here for the paths that do not depend on a live
+ * XNAT context, including what happens when a concurrent request creates the same mapping first. The
+ * notification it sends on success is left to integration testing.</p>
+ */
+@RunWith(MockitoJUnitRunner.class)
+public class OpenIdUserResolverLinkTest {
+
+    private static final String PROVIDER        = "partner";  // the newly added provider
+    private static final String SOURCE_PROVIDER = "keycloak"; // the one whose accounts already exist
+    private static final String USERNAME        = "alice@example.org";  // both providers key on the same claim
+    private static final String XNAT_LOGIN      = "alice";    // the account both mappings resolve to
+
+    @Mock private OpenIdAuthPlugin     plugin;
+    @Mock private XdatUserAuthService  userAuthService;
+
+    private OpenIdUserResolver resolver() {
+        return new OpenIdUserResolver(plugin, userAuthService);
+    }
+
+    @Test
+    public void findsTheSourceMappingForAMatchingUsername() {
+        final XdatUserAuth source = mock(XdatUserAuth.class);
+        when(userAuthService.getUserByNameAndAuth(USERNAME, XdatUserAuthService.OPENID, SOURCE_PROVIDER)).thenReturn(source);
+
+        assertSame(source, resolver().findLinkSource(USERNAME, SOURCE_PROVIDER));
+    }
+
+    @Test
+    public void returnsNullWhenNoMappingMatches() {
+        when(userAuthService.getUserByNameAndAuth(USERNAME, XdatUserAuthService.OPENID, SOURCE_PROVIDER)).thenReturn(null);
+
+        assertNull(resolver().findLinkSource(USERNAME, SOURCE_PROVIDER));
+    }
+
+    @Test
+    public void doesNotQueryOnABlankUsername() {
+        assertNull(resolver().findLinkSource("  ", SOURCE_PROVIDER));
+        assertNull(resolver().findLinkSource(null, SOURCE_PROVIDER));
+
+        verify(userAuthService, never()).getUserByNameAndAuth(org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString());
+    }
+
+    @Test
+    public void doesNotQueryOnABlankSourceProvider() {
+        assertNull(resolver().findLinkSource(USERNAME, null));
+        assertNull(resolver().findLinkSource(USERNAME, ""));
+
+        verify(userAuthService, never()).getUserByNameAndAuth(org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString());
+    }
+
+    @Test
+    public void aMappingUnderADifferentProviderIsNotAMatch() {
+        // The same claim value under another provider must not be reachable: provider scoping is the
+        // whole reason two identities for one human stay distinct until deliberately linked.
+        when(userAuthService.getUserByNameAndAuth(USERNAME, XdatUserAuthService.OPENID, SOURCE_PROVIDER)).thenReturn(null);
+
+        assertNull(resolver().findLinkSource(USERNAME, SOURCE_PROVIDER));
+        verify(userAuthService).getUserByNameAndAuth(USERNAME, XdatUserAuthService.OPENID, SOURCE_PROVIDER);
+    }
+
+    // ---- linkExistingIfConfigured: shared config handling for both auth paths ---------------------
+
+    @Test
+    public void doesNothingWhenLinkingIsNotEnabled() {
+        assertNull(resolver().linkExistingIfConfigured(PROVIDER, AuthPath.BEARER, USERNAME));
+        assertNull(resolver().linkExistingIfConfigured(PROVIDER, AuthPath.ID_TOKEN, USERNAME));
+
+        verify(userAuthService, never()).getUserByNameAndAuth(org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString());
+        // Disabled means disabled: the rest of the configuration is not even consulted.
+        verify(plugin, never()).getProperty(PROVIDER, "linkExisting.sourceProvider");
+        verify(plugin, never()).getProperty(PROVIDER, "bearer.linkExisting.sourceProvider");
+    }
+
+    @Test
+    public void doesNothingWhenEnabledButNoSourceProviderIsSet() {
+        // Fail closed on a half-configured provider rather than guessing which provider to match against.
+        when(plugin.getProperty(PROVIDER, "bearer.linkExisting.enabled")).thenReturn("true");
+
+        final OpenIdUserResolver resolver = org.mockito.Mockito.spy(resolver());
+        assertNull(resolver.linkExistingIfConfigured(PROVIDER, AuthPath.BEARER, USERNAME));
+
+        // Not merely "returns null" — it must not enter linking with no provider to look against, which a
+        // downstream blank check would otherwise make indistinguishable.
+        // nullable rather than anyString: the argument under test is precisely the one that would be null.
+        verify(resolver, never()).linkExisting(org.mockito.ArgumentMatchers.nullable(String.class),
+                org.mockito.ArgumentMatchers.nullable(String.class),
+                org.mockito.ArgumentMatchers.nullable(String.class));
+        verify(userAuthService, never()).getUserByNameAndAuth(org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString());
+    }
+
+    @Test
+    public void aSharedSettingAppliesToBothPaths() {
+        // openid.{p}.linkExisting.* with no path prefix governs the browser and API paths alike.
+        when(plugin.getProperty(PROVIDER, "linkExisting.enabled")).thenReturn("true");
+        when(plugin.getProperty(PROVIDER, "linkExisting.sourceProvider")).thenReturn(SOURCE_PROVIDER);
+        when(userAuthService.getUserByNameAndAuth(USERNAME, XdatUserAuthService.OPENID, SOURCE_PROVIDER)).thenReturn(null);
+
+        assertNull(resolver().linkExistingIfConfigured(PROVIDER, AuthPath.BEARER, USERNAME));
+        assertNull(resolver().linkExistingIfConfigured(PROVIDER, AuthPath.ID_TOKEN, USERNAME));
+
+        // Reached the lookup on both paths, which is what proves the shared key was honoured.
+        verify(userAuthService, org.mockito.Mockito.times(2))
+                .getUserByNameAndAuth(USERNAME, XdatUserAuthService.OPENID, SOURCE_PROVIDER);
+    }
+
+    @Test
+    public void aPathScopedFalseOverridesASharedTrue() {
+        // A site that wants this on the API path but not the browser one.
+        when(plugin.getProperty(PROVIDER, "idToken.linkExisting.enabled")).thenReturn("false");
+
+        assertNull(resolver().linkExistingIfConfigured(PROVIDER, AuthPath.ID_TOKEN, USERNAME));
+
+        verify(userAuthService, never()).getUserByNameAndAuth(org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString());
+    }
+
+    // ---- a concurrent request may create the mapping first -----------------------------------------
+
+    /**
+     * Linking runs on a lookup miss, and a viewer opening a study issues several requests at once, so the
+     * first few can all miss and all try to create the mapping. Only one wins; the rest must not turn a
+     * successful link into a failed request.
+     */
+    @Test
+    public void usesTheMappingWhenAConcurrentRequestCreatedItFirst() {
+        final XdatUserAuth source = mock(XdatUserAuth.class);
+        when(source.getXdatUsername()).thenReturn(XNAT_LOGIN);
+        when(userAuthService.getUserByNameAndAuth(USERNAME, XdatUserAuthService.OPENID, SOURCE_PROVIDER))
+                .thenReturn(source);
+
+        // The create loses the race...
+        doThrow(new RuntimeException("duplicate key"))
+                .when(userAuthService).create(org.mockito.ArgumentMatchers.any(XdatUserAuth.class));
+        // ...and the winner's mapping is there on the re-read, naming the same account.
+        final XdatUserAuth winner = mock(XdatUserAuth.class);
+        lenient().when(winner.getXdatUsername()).thenReturn(XNAT_LOGIN);
+        when(userAuthService.getUserByNameAndAuth(USERNAME, XdatUserAuthService.OPENID, PROVIDER)).thenReturn(winner);
+
+        // Observe notifications through an injected executor. The static one runs them on another
+        // thread, where a MockedStatic set up here does not apply -- so a notification sent from the
+        // losing path would neither be asserted on nor fail, which is how it went unnoticed.
+        final java.util.List<Runnable> submitted = new java.util.ArrayList<>();
+
+        try (final MockedStatic<Users> users = mockStatic(Users.class, withSettings().lenient());
+             final MockedStatic<AdminUtils> admin = mockStatic(AdminUtils.class, withSettings().lenient());
+             final MockedStatic<XDAT> xdat = mockStatic(XDAT.class, withSettings().lenient())) {
+
+            final UserI account = mock(UserI.class);
+            users.when(() -> Users.getUser(XNAT_LOGIN)).thenReturn(account);
+
+            assertSame(account, new OpenIdUserResolver(plugin, userAuthService, submitted::add)
+                    .linkExisting(PROVIDER, USERNAME, SOURCE_PROVIDER));
+            verify(account).setAuthorization(winner);
+            // The winner already told this person their account was linked. Every loser reaches the same
+            // account by the same mapping, so a notification here is one message per concurrent request.
+            assertEquals("a request that lost the race must not notify", 0, submitted.size());
+        }
+    }
+
+    @Test
+    public void stillFailsWhenTheCreateFailedForSomeOtherReason() {
+        // Nothing on the re-read means the create genuinely failed, and the caller has to hear about it
+        // rather than proceed as though the identity were linked.
+        final XdatUserAuth source = mock(XdatUserAuth.class);
+        when(source.getXdatUsername()).thenReturn(XNAT_LOGIN);
+        when(userAuthService.getUserByNameAndAuth(USERNAME, XdatUserAuthService.OPENID, SOURCE_PROVIDER))
+                .thenReturn(source);
+        doThrow(new RuntimeException("connection reset"))
+                .when(userAuthService).create(org.mockito.ArgumentMatchers.any(XdatUserAuth.class));
+        when(userAuthService.getUserByNameAndAuth(USERNAME, XdatUserAuthService.OPENID, PROVIDER)).thenReturn(null);
+
+        try (final MockedStatic<Users> users = mockStatic(Users.class, withSettings().lenient())) {
+            users.when(() -> Users.getUser(XNAT_LOGIN)).thenReturn(mock(UserI.class));
+
+            try {
+                resolver().linkExisting(PROVIDER, USERNAME, SOURCE_PROVIDER);
+                fail("expected the create failure to surface");
+            } catch (final AuthenticationException expected) {
+                assertTrue(expected.getMessage().contains("link"));
+            }
+        }
+    }
+
+    // ---- what a source account that will not load means ------------------------------------------
+
+    @Test
+    public void doesNotLinkWhenTheSourceAccountNoLongerExists() {
+        // A stale mapping. There is genuinely nothing to link to, so the caller may go on to create an
+        // account or deny, as configured.
+        sourceMappingExists();
+        try (final MockedStatic<Users> users = mockStatic(Users.class, withSettings().lenient())) {
+            users.when(() -> Users.getUser(XNAT_LOGIN)).thenThrow(new UserNotFoundException(XNAT_LOGIN));
+
+            assertNull(resolver().linkExisting(PROVIDER, USERNAME, SOURCE_PROVIDER));
+        }
+    }
+
+    @Test
+    public void refusesWhenTheSourceAccountCannotBeLoaded() {
+        // Different from the above: the account exists, we just cannot read it. Returning null here would
+        // let the caller fall through to forceUserCreate and provision a second account for someone who
+        // already has one -- the outcome linking exists to prevent -- so it has to deny instead.
+        sourceMappingExists();
+        try (final MockedStatic<Users> users = mockStatic(Users.class, withSettings().lenient())) {
+            users.when(() -> Users.getUser(XNAT_LOGIN)).thenThrow(new UserInitException("cannot initialise"));
+
+            try {
+                resolver().linkExisting(PROVIDER, USERNAME, SOURCE_PROVIDER);
+                fail("an unloadable source account must deny, not fall through to account creation");
+            } catch (final AuthenticationException expected) {
+                assertTrue(expected.getMessage().toLowerCase().contains("could not load"));
+            }
+            verify(userAuthService, never()).create(org.mockito.ArgumentMatchers.any(XdatUserAuth.class));
+        }
+    }
+
+    // ---- notification runs off the authentication path ---------------------------------------------
+
+    /** A resolver whose notifications run on the calling thread, so they can be observed. */
+    private OpenIdUserResolver resolverNotifyingInline() {
+        return new OpenIdUserResolver(plugin, userAuthService, Runnable::run);
+    }
+
+    private void sourceMappingExists() {
+        final XdatUserAuth source = mock(XdatUserAuth.class);
+        lenient().when(source.getXdatUsername()).thenReturn(XNAT_LOGIN);
+        lenient().when(userAuthService.getUserByNameAndAuth(USERNAME, XdatUserAuthService.OPENID, SOURCE_PROVIDER))
+                 .thenReturn(source);
+    }
+
+    @Test
+    public void notificationIsHandedToTheExecutorRatherThanRunInline() {
+        // The mail server is not on the authentication path: a slow one must not add its latency to the
+        // request that links, so the work is submitted rather than performed here.
+        sourceMappingExists();
+        final java.util.List<Runnable> submitted = new java.util.ArrayList<>();
+
+        try (final MockedStatic<Users> users = mockStatic(Users.class, withSettings().lenient())) {
+            users.when(() -> Users.getUser(XNAT_LOGIN)).thenReturn(mock(UserI.class));
+
+            new OpenIdUserResolver(plugin, userAuthService, submitted::add)
+                    .linkExisting(PROVIDER, USERNAME, SOURCE_PROVIDER);
+
+            assertEquals("exactly one notification should be queued", 1, submitted.size());
+        }
+    }
+
+    @Test
+    public void theAccountHolderIsStillNotifiedWhenTheAdministratorCopyFails() throws Exception {
+        // Both sends shared one try, administrator first, so a failure there silently skipped the holder's
+        // copy -- the half that lets someone report a link they did not expect.
+        sourceMappingExists();
+        final UserI account = mock(UserI.class);
+        lenient().when(account.getUsername()).thenReturn(XNAT_LOGIN);
+        lenient().when(account.getEmail()).thenReturn("a.person@example.org");
+
+        try (final MockedStatic<Users> users = mockStatic(Users.class, withSettings().lenient());
+             final MockedStatic<AdminUtils> admin = mockStatic(AdminUtils.class, withSettings().lenient());
+             final MockedStatic<XDAT> xdat = mockStatic(XDAT.class, withSettings().lenient())) {
+
+            users.when(() -> Users.getUser(XNAT_LOGIN)).thenReturn(account);
+            admin.when(() -> AdminUtils.sendAdminEmail(org.mockito.ArgumentMatchers.any(UserI.class),
+                                                       org.mockito.ArgumentMatchers.anyString(),
+                                                       org.mockito.ArgumentMatchers.anyString()))
+                 .thenThrow(new RuntimeException("admin from-address rejected"));
+
+            final MailService mail = mock(MailService.class);
+            final SiteConfigPreferences prefs = mock(SiteConfigPreferences.class);
+            lenient().when(prefs.getAdminEmail()).thenReturn("site-admin@example.org");
+            xdat.when(XDAT::getMailService).thenReturn(mail);
+            xdat.when(XDAT::getSiteConfigPreferences).thenReturn(prefs);
+
+            resolverNotifyingInline().linkExisting(PROVIDER, USERNAME, SOURCE_PROVIDER);
+
+            verify(mail).sendHtmlMessage(org.mockito.ArgumentMatchers.anyString(),
+                                         org.mockito.ArgumentMatchers.anyString(),
+                                         org.mockito.ArgumentMatchers.anyString(),
+                                         org.mockito.ArgumentMatchers.anyString());
+        }
+    }
+
+    @Test
+    public void aFailingNotificationDoesNotFailTheLink() {
+        // The link is already committed by this point; a mail failure must not undo a successful sign-in.
+        sourceMappingExists();
+        final UserI account = mock(UserI.class);
+        when(account.getUsername()).thenThrow(new RuntimeException("mail server unreachable"));
+
+        try (final MockedStatic<Users> users = mockStatic(Users.class, withSettings().lenient());
+             final MockedStatic<AdminUtils> admin = mockStatic(AdminUtils.class, withSettings().lenient())) {
+            users.when(() -> Users.getUser(XNAT_LOGIN)).thenReturn(account);
+
+            assertSame(account, resolverNotifyingInline().linkExisting(PROVIDER, USERNAME, SOURCE_PROVIDER));
+        }
+    }
+
+    // ---- two providers each naming the other --------------------------------------------------------
+
+    /**
+     * Reciprocal configuration, which is what a parallel-provider window during a migration needs: whichever
+     * provider a person arrives through first, the other links to the account that arrival established.
+     *
+     * <p>The property worth pinning is that linking does not chain. Each direction performs exactly one
+     * lookup, against the provider it was told to look at — a miss is a miss, not a reason to go looking
+     * through a third provider.</p>
+     */
+    @Test
+    public void eachProviderLinksToTheOtherWithoutChaining() {
+        // openid.partner.linkExisting.sourceProvider = keycloak, and vice versa.
+        when(plugin.getProperty(PROVIDER, "linkExisting.enabled")).thenReturn("true");
+        when(plugin.getProperty(PROVIDER, "linkExisting.sourceProvider")).thenReturn(SOURCE_PROVIDER);
+        when(plugin.getProperty(SOURCE_PROVIDER, "linkExisting.enabled")).thenReturn("true");
+        when(plugin.getProperty(SOURCE_PROVIDER, "linkExisting.sourceProvider")).thenReturn(PROVIDER);
+
+        final XdatUserAuth partnerMapping = mock(XdatUserAuth.class);
+        lenient().when(partnerMapping.getXdatUsername()).thenReturn(XNAT_LOGIN);
+        final XdatUserAuth keycloakMapping = mock(XdatUserAuth.class);
+        lenient().when(keycloakMapping.getXdatUsername()).thenReturn(XNAT_LOGIN);
+
+        try (final MockedStatic<Users> users = mockStatic(Users.class, withSettings().lenient());
+             final MockedStatic<AdminUtils> admin = mockStatic(AdminUtils.class, withSettings().lenient())) {
+
+            final UserI account = mock(UserI.class);
+            users.when(() -> Users.getUser(XNAT_LOGIN)).thenReturn(account);
+
+            // Arriving through PROVIDER: only the keycloak mapping exists yet.
+            when(userAuthService.getUserByNameAndAuth(USERNAME, XdatUserAuthService.OPENID, SOURCE_PROVIDER))
+                    .thenReturn(keycloakMapping);
+            assertSame(account, resolverNotifyingInline()
+                    .linkExistingIfConfigured(PROVIDER, AuthPath.BEARER, USERNAME));
+            verify(userAuthService).getUserByNameAndAuth(USERNAME, XdatUserAuthService.OPENID, SOURCE_PROVIDER);
+            verify(userAuthService, never()).getUserByNameAndAuth(USERNAME, XdatUserAuthService.OPENID, PROVIDER);
+
+            // Arriving through SOURCE_PROVIDER instead: only the partner mapping exists yet.
+            org.mockito.Mockito.reset(userAuthService);
+            when(userAuthService.getUserByNameAndAuth(USERNAME, XdatUserAuthService.OPENID, PROVIDER))
+                    .thenReturn(partnerMapping);
+            assertSame(account, resolverNotifyingInline()
+                    .linkExistingIfConfigured(SOURCE_PROVIDER, AuthPath.ID_TOKEN, USERNAME));
+            verify(userAuthService).getUserByNameAndAuth(USERNAME, XdatUserAuthService.OPENID, PROVIDER);
+            verify(userAuthService, never()).getUserByNameAndAuth(USERNAME, XdatUserAuthService.OPENID, SOURCE_PROVIDER);
+        }
+    }
+
+    @Test
+    public void refusesWhenAConcurrentMappingNamesADifferentAccount() {
+        // Losing the race is only safe if the mapping that appeared names the same account. One naming a
+        // different account means this identity is not linked to the account we resolved, and proceeding
+        // would serve the request as whoever that mapping points at.
+        final XdatUserAuth source = mock(XdatUserAuth.class);
+        when(source.getXdatUsername()).thenReturn(XNAT_LOGIN);
+        when(userAuthService.getUserByNameAndAuth(USERNAME, XdatUserAuthService.OPENID, SOURCE_PROVIDER))
+                .thenReturn(source);
+        doThrow(new RuntimeException("duplicate key"))
+                .when(userAuthService).create(org.mockito.ArgumentMatchers.any(XdatUserAuth.class));
+
+        final XdatUserAuth someoneElse = mock(XdatUserAuth.class);
+        when(someoneElse.getXdatUsername()).thenReturn("a-different-account");
+        when(userAuthService.getUserByNameAndAuth(USERNAME, XdatUserAuthService.OPENID, PROVIDER))
+                .thenReturn(someoneElse);
+
+        try (final MockedStatic<Users> users = mockStatic(Users.class, withSettings().lenient())) {
+            users.when(() -> Users.getUser(XNAT_LOGIN)).thenReturn(mock(UserI.class));
+
+            try {
+                resolver().linkExisting(PROVIDER, USERNAME, SOURCE_PROVIDER);
+                fail("a mapping naming another account must not be treated as a won race");
+            } catch (final AuthenticationException expected) {
+                assertTrue(expected.getMessage().contains("link"));
+            }
+        }
+    }
+}
