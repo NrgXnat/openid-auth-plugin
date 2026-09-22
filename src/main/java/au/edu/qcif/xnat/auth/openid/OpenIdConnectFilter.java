@@ -1,49 +1,28 @@
-/*
- *Copyright (C) 2018 Queensland Cyber Infrastructure Foundation (http://www.qcif.edu.au/)
- *
- *This program is free software: you can redistribute it and/or modify
- *it under the terms of the GNU General Public License as published by
- *the Free Software Foundation; either version 2 of the License, or
- *(at your option) any later version.
- *
- *This program is distributed in the hope that it will be useful,
- *but WITHOUT ANY WARRANTY; without even the implied warranty of
- *MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *GNU General Public License for more details.
- *
- *You should have received a copy of the GNU General Public License along
- *with this program; if not, write to the Free Software Foundation, Inc.,
- *51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
- */
 package au.edu.qcif.xnat.auth.openid;
 
+import au.edu.qcif.xnat.auth.openid.gate.AuthPath;
+import au.edu.qcif.xnat.auth.openid.gate.ClaimGate;
+import au.edu.qcif.xnat.auth.openid.gate.ClaimGateException;
+import au.edu.qcif.xnat.auth.openid.gate.ClaimGateFactory;
+import au.edu.qcif.xnat.auth.openid.gate.TokenContext;
 import au.edu.qcif.xnat.auth.openid.service.KeystoreService;
 import au.edu.qcif.xnat.auth.openid.tokens.OpenIdAuthRequestToken;
 import au.edu.qcif.xnat.auth.openid.tokens.OpenIdAuthToken;
 import com.nimbusds.jose.JOSEException;
 import com.nimbusds.jose.crypto.RSADecrypter;
 import com.nimbusds.jwt.EncryptedJWT;
-import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
 import lombok.extern.slf4j.Slf4j;
-import org.apache.commons.collections.ListUtils;
 import org.apache.commons.collections.MapUtils;
-import org.apache.commons.lang3.RegExUtils;
 import org.apache.commons.lang3.StringUtils;
-import org.apache.velocity.VelocityContext;
 import org.nrg.framework.generics.GenericUtils;
 import org.nrg.xapi.exceptions.NotFoundException;
-import org.nrg.xdat.entities.XdatUserAuth;
 import org.nrg.xdat.exceptions.UsernameAuthMappingNotFoundException;
 import org.nrg.xdat.preferences.SiteConfigPreferences;
 import org.nrg.xdat.security.helpers.UserHelper;
-import org.nrg.xdat.security.helpers.Users;
 import org.nrg.xdat.services.XdatUserAuthService;
 import org.nrg.xdat.turbine.utils.AccessLogger;
-import org.nrg.xdat.turbine.utils.AdminUtils;
 import org.nrg.xdat.turbine.utils.TurbineUtils;
-import org.nrg.xft.event.EventDetails;
-import org.nrg.xft.event.EventUtils;
 import org.nrg.xft.security.UserI;
 import org.nrg.xnat.security.exceptions.NewAutoAccountNotAutoEnabledException;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -53,7 +32,6 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.security.authentication.AuthenticationEventPublisher;
 import org.springframework.security.authentication.AuthenticationManager;
-import org.springframework.security.authentication.AuthenticationServiceException;
 import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.authentication.CredentialsExpiredException;
 import org.springframework.security.core.Authentication;
@@ -69,6 +47,7 @@ import org.springframework.security.web.authentication.session.SessionAuthentica
 import org.springframework.stereotype.Component;
 
 import javax.servlet.ServletException;
+import javax.servlet.http.Cookie;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import javax.servlet.http.HttpSession;
@@ -76,12 +55,16 @@ import java.io.IOException;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.text.ParseException;
-import java.util.Arrays;
 import java.util.Collections;
-import java.util.List;
 import java.util.Map;
-import java.util.function.Function;
 import java.util.stream.Collectors;
+import au.edu.qcif.xnat.auth.openid.utils.OpenIdUtils;
+import org.nrg.xdat.XDAT;
+import org.springframework.beans.factory.annotation.Qualifier;
+import java.util.Optional;
+import java.util.concurrent.Executor;
+import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.LOGOUT_URI;
+import org.nrg.xnat.security.OnXnatLogin;
 
 /**
  * Main Spring Security authentication filter.
@@ -93,45 +76,90 @@ import java.util.stream.Collectors;
 @Slf4j
 @Component
 public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter {
-    private static final List<String> ALL_DOMAINS = Collections.singletonList("*");
 
     /**
      * Session attribute key for storing OpenID error messages to display on the login page.
      */
     public static final String OPENID_ERROR_MESSAGE = "openIdErrorMessage";
 
+    /**
+     * Cookie set by the login-screen extension when an auto-login (prompt=none) redirect is issued. Acts as a
+     * short-lived, one-shot guard: while it is present the login page renders normally instead of re-issuing
+     * the auto-login redirect, so a signed-out visitor is not caught in a redirect loop. It is a cookie rather
+     * than an {@code HttpSession} attribute because the guard must survive the
+     * {@code Login.vm -> /openid-login -> provider -> callback} redirect chain, across which the session does
+     * not reliably persist (the Turbine login page and the Spring filter can observe different sessions).
+     */
+    public static final String AUTO_LOGIN_ATTEMPTED_COOKIE = "OPENID_AUTOLOGIN_TRIED";
+
+    /**
+     * Cookie set on logout to suppress auto-login until the user next signs in explicitly, so that
+     * clicking "log out" does not immediately trigger a {@code prompt=none} re-login while the provider
+     * session is still alive. Written by the logout handler, read by the login-screen extension, and cleared
+     * here on a successful interactive login.
+     */
+    public static final String AUTO_LOGIN_SUPPRESS_COOKIE = "OPENID_NO_AUTOLOGIN";
+
+    /**
+     * Session attribute holding the raw id_token from the interactive login, so it can be sent as the
+     * {@code id_token_hint} on an RP-initiated logout. Server-side only (never sent to the browser).
+     */
+    public static final String ID_TOKEN_SESSION_ATTR = "openIdIdToken";
+
     private final OpenIdAuthPlugin _plugin;
     private final AuthenticationEventPublisher _eventPublisher;
-    private final XdatUserAuthService _userAuthService;
-    private final SiteConfigPreferences _siteConfigPreferences;
-    private final Map<String, List<String>> _allowedDomains;
     private final KeystoreService _keystoreService;
+    private final ClaimGateFactory _gateFactory;
+    private final OpenIdUserResolver _userResolver;
+    private final OpenIdAccountPolicy _accountPolicy;
 
     private OAuth2RestTemplate _restTemplate;
 
     private static final String DEFAULT_REDIRECT_URI = "/openid/callback";
+    private static final String USER_INFO_URI = "userInfoUri";
 
+    /**
+     * XNAT's own {@code asyncTaskExecutor}, taken by name: it declares two beans implementing
+     * {@code AsyncTaskExecutor} (this one and the task scheduler), so by-type injection is ambiguous.
+     */
+    @Autowired
     public OpenIdConnectFilter(final OpenIdAuthPlugin plugin,
                                final AuthenticationEventPublisher eventPublisher,
                                final XdatUserAuthService userAuthService,
                                final SiteConfigPreferences siteConfigPreferences,
-                               final KeystoreService keystoreService) {
+                               final KeystoreService keystoreService,
+                               @Qualifier("asyncTaskExecutor") final Executor notifier) {
         super(plugin.getRedirectUri());
         log.debug("Creating filter for URL {}", plugin.getRedirectUri());
         setAuthenticationManager(new NoopAuthenticationManager());
         _plugin = plugin;
         _eventPublisher = eventPublisher;
-        _userAuthService = userAuthService;
-        _siteConfigPreferences = siteConfigPreferences;
         _keystoreService = keystoreService;
+        _gateFactory = new ClaimGateFactory(plugin);
+        _userResolver = new OpenIdUserResolver(plugin, userAuthService, notifier);
+        _accountPolicy = new OpenIdAccountPolicy(plugin, siteConfigPreferences);
+    }
 
-        _allowedDomains = _plugin.getEnabledProviders().stream().collect(Collectors.toMap(Function.identity(), this::getAllowedEmailDomains));
+    /** Test seam: inject the user resolver so the missing-mapping branches can be driven directly. */
+    OpenIdConnectFilter(final OpenIdAuthPlugin plugin,
+                        final AuthenticationEventPublisher eventPublisher,
+                        final SiteConfigPreferences siteConfigPreferences,
+                        final KeystoreService keystoreService,
+                        final OpenIdUserResolver userResolver) {
+        super(plugin.getRedirectUri());
+        setAuthenticationManager(new NoopAuthenticationManager());
+        _plugin = plugin;
+        _eventPublisher = eventPublisher;
+        _keystoreService = keystoreService;
+        _gateFactory = new ClaimGateFactory(plugin);
+        _userResolver = userResolver;
+        _accountPolicy = new OpenIdAccountPolicy(plugin, siteConfigPreferences);
     }
 
     @Autowired
-    @Override
-    public void setAuthenticationSuccessHandler(final AuthenticationSuccessHandler handler) {
-        super.setAuthenticationSuccessHandler(handler);
+    public void setAuthenticationSuccessHandler(@Qualifier(OpenIdUtils.ALTERNATE_SUCCESS_HANDLER) final Optional<AuthenticationSuccessHandler> alternate,
+                                                final AuthenticationSuccessHandler xnatSuccessHandler) {
+        super.setAuthenticationSuccessHandler(alternate.orElse(xnatSuccessHandler));
     }
 
     @Autowired
@@ -155,6 +183,14 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
     public Authentication attemptAuthentication(HttpServletRequest request, HttpServletResponse response) throws AuthenticationException, IOException {
         log.debug("Executed attemptAuthentication...");
 
+        // An OAuth error returned to the redirect URI (e.g. ?error=login_required) carries no code to
+        // exchange; handle it up front so a failed auto-login (prompt=none) attempt falls back to the login
+        // page quietly instead of being run through — and mangled by — the token-exchange path.
+        final String authorizationError = request.getParameter("error");
+        if (StringUtils.isNotBlank(authorizationError)) {
+            return handleAuthorizationError(response, authorizationError);
+        }
+
         HttpSession session = request.getSession(false);
         if (session != null) {
             String requestProviderId = request.getParameter("providerId");
@@ -162,6 +198,23 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
             if (requestProviderId != null && !requestProviderId.equals(sessionProviderId)) {
                 log.debug("Found a session that had previously stopped during the OAuth/OIDC authentication process. Deleting the session.");
                 request.getSession().invalidate();
+            }
+        }
+
+        // The provider is chosen on the outbound request (?providerId=...) and kept in the session,
+        // because the callback carries only OAuth parameters. Neither present means this session never
+        // started the flow -- most often because the sign-in began on a different host than the
+        // configured siteUrl, so the callback arrived in a new, empty session. There is then no token
+        // endpoint to exchange the code against, and attempting it anyway stalls with nothing logged.
+        if (request.getParameter("providerId") == null) {
+            final HttpSession current = request.getSession(false);
+            if (current == null || current.getAttribute("providerId") == null) {
+                log.error("No OpenID provider for this request: no 'providerId' parameter, and none "
+                                + "recorded in the session. If the sign-in started on a different host than "
+                                + "the configured siteUrl ('{}'), the callback arrives in a new session and "
+                                + "the flow cannot continue.",
+                        _plugin.getProps().getProperty("siteUrl"));
+                throw new BadCredentialsException("Could not determine the OpenID provider for this request");
             }
         }
 
@@ -185,9 +238,9 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         log.debug("Getting idToken...");
         final String idToken = accessToken.getAdditionalInformation().get("id_token").toString().trim();
 
-        final JWTClaimsSet claimsSet;
+        final TokenContext tokenContext;
         try {
-            claimsSet = parseIdToken(idToken, providerId);
+            tokenContext = parseIdToken(idToken, providerId);
         } catch (JOSEException | ParseException e) {
             log.error("An unexpected error occurred attempting to parse id_token", e);
             throw new BadCredentialsException("Failed to parse id_token", e);
@@ -196,17 +249,19 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
             throw new BadCredentialsException("Provider not configured", e);
         }
 
-        final Map<String, String> authInfo = claimsSet.getClaims().entrySet().stream()
+        applyIdTokenClaimGates(providerId, tokenContext);
+
+        final Map<String, Object> authInfo = tokenContext.claims().getClaims().entrySet().stream()
                 .collect(Collectors.toMap(
                         Map.Entry::getKey,
-                        e -> e.getValue() != null ? e.getValue().toString() : ""
+                        e -> e.getValue() != null ? e.getValue() : ""
                 ));
 
         log.debug("===== : {}", authInfo);
-        final String userInfoUri = _plugin.getProperty(providerId, "userInfoUri");
+        final String userInfoUri = _plugin.getProperty(providerId, USER_INFO_URI);
 
         if (!StringUtils.isEmpty(userInfoUri)) {
-            Map<String, String> userInfo = getUserInfo(accessToken.getValue(), userInfoUri);
+            Map<String, Object> userInfo = getUserInfo(accessToken.getValue(), userInfoUri);
             authInfo.putAll(userInfo);
         }
 
@@ -218,7 +273,7 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
             throw new BadCredentialsException(e.getMessage(), e);
         }
 
-        if (shouldFilterEmailDomains(providerId) && !isAllowedEmailDomain(user.getEmail(), providerId)) {
+        if (_accountPolicy.shouldFilterEmailDomains(providerId) && !_accountPolicy.isEmailDomainAllowed(user.getEmail(), providerId)) {
             throw new NewAutoAccountNotAutoEnabledException("New OpenID user, email is not on the domain whitelist.", user);
         }
         if (!_plugin.isEnabled(providerId)) {
@@ -230,22 +285,17 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         String requesterUsername = null;
         try {
             requesterUsername = user.getUsername();
-            xdatUser = _userAuthService.getUserDetailsByNameAndAuth(requesterUsername, XdatUserAuthService.OPENID, providerId);
+            xdatUser = _userResolver.resolveExisting(requesterUsername, providerId);
         } catch (UsernameAuthMappingNotFoundException e) {
-            if (Boolean.parseBoolean(_plugin.getProperty(providerId, "forceUserCreate"))) {
-                xdatUser = createUserAccount(providerId, user);
-            } else {
-                // Give users an option to register or connect OpenID Account with an XNAT account
-                log.info("User {} attempted to log using authentication provider ID {}, diverting to account merge page.", user.getUsername(), providerId);
-                request.getSession().setAttribute(UsernameAuthMappingNotFoundException.class.getSimpleName(), new UsernameAuthMappingNotFoundException(e.getUsername(), e.getAuthMethod(), e.getAuthMethodId(), user.getEmail(), user.getLastname(), user.getFirstname()));
-                response.sendRedirect(TurbineUtils.GetFullServerPath() + "/app/template/RegisterExternalLogin.vm");
-                return null;
+            xdatUser = resolveOnMissingMapping(providerId, user, requesterUsername, e, request, response);
+            if (xdatUser == null) {
+                return null; // diverted to the account merge page
             }
         }
         if (!xdatUser.isEnabled()) {
             throw new NewAutoAccountNotAutoEnabledException("New OpenID user, needs to to be enabled.", xdatUser);
         }
-        if (getSiteConfigPreferences().getEmailVerification() && !xdatUser.isVerified()) {
+        if (_accountPolicy.isEmailVerificationRequired(xdatUser)) {
             log.info("User {} is not verified, redirecting to verification page.", xdatUser.getUsername());
             String encodedEmail = URLEncoder.encode(xdatUser.getEmail(), StandardCharsets.UTF_8.toString());
             String encodedUsername = URLEncoder.encode(xdatUser.getUsername(), StandardCharsets.UTF_8.toString());
@@ -258,7 +308,7 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         }
 
         if (requesterUsername != null) {
-            Authentication authentication = new OpenIdAuthToken(xdatUser, providerId);
+            Authentication authentication = new OpenIdAuthToken(xdatUser, providerId, authInfo);
 
             Authentication authRequestToken = new OpenIdAuthRequestToken(requesterUsername, providerId);
             _eventPublisher.publishAuthenticationSuccess(authRequestToken);
@@ -266,6 +316,12 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
             org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(authRequestToken);
             AccessLogger.LogServiceAccess(xdatUser.getUsername(), request, "Authentication", "SUCCESS");
             UserHelper.setUserHelper(request, user);
+            clearAutoLoginSuppressionCookie(request, response);
+            // Keep the id_token for unified logout's id_token_hint, but only when an end-session URL is
+            // configured for this provider -- no point storing it (or the PII it carries) otherwise.
+            if (StringUtils.isNotBlank(_plugin.getProperty(providerId, LOGOUT_URI))) {
+                request.getSession().setAttribute(ID_TOKEN_SESSION_ATTR, idToken);
+            }
 
             return authentication;
         }
@@ -316,130 +372,142 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         return userMessage;
     }
 
-    private JWTClaimsSet parseIdToken(final String idToken, final String providerId)
+    /**
+     * Handles an OAuth error returned to the redirect URI. An auto-login (prompt=none) attempt that finds no
+     * session to reuse comes back with an "interaction required" error (login_required and friends); that is an
+     * expected negative result, so we quietly return to the login page. The login-screen extension's short-lived
+     * {@link #AUTO_LOGIN_ATTEMPTED_COOKIE} guard, set when the redirect was issued, stops the page from
+     * immediately re-issuing the auto-login redirect and looping. Any other error is treated as a genuine failure.
+     *
+     * <p>The decision keys off the OIDC error code alone: the interaction-required codes are returned only in
+     * response to a {@code prompt=none} request, which only the auto-login flow issues. It deliberately does not
+     * consult server-side session state, which does not reliably survive the redirect chain (see
+     * {@link #AUTO_LOGIN_ATTEMPTED_COOKIE}).</p>
+     */
+    private Authentication handleAuthorizationError(final HttpServletResponse response, final String error) throws IOException {
+        if (isInteractionRequiredError(error)) {
+            log.debug("OpenID auto-login returned '{}'; showing the login page.", error);
+            response.sendRedirect(TurbineUtils.GetFullServerPath() + "/app/template/Login.vm");
+            return null;
+        }
+        log.info("OpenID provider returned an authorization error: {}", error);
+        throw new BadCredentialsException("OpenID provider returned error: " + error);
+    }
+
+    /** The OIDC error codes that mean the user would have had to interact, i.e. there was no existing session to reuse. */
+    static boolean isInteractionRequiredError(final String error) {
+        return "login_required".equals(error)
+                || "interaction_required".equals(error)
+                || "consent_required".equals(error)
+                || "account_selection_required".equals(error);
+    }
+
+    /**
+     * Clears the {@link #AUTO_LOGIN_SUPPRESS_COOKIE} once the user has signed in explicitly, re-arming
+     * auto-login for a future session. No-op when the cookie is not present on the request.
+     */
+    static void clearAutoLoginSuppressionCookie(final HttpServletRequest request, final HttpServletResponse response) {
+        if (request.getCookies() == null) {
+            return;
+        }
+        for (final Cookie cookie : request.getCookies()) {
+            if (AUTO_LOGIN_SUPPRESS_COOKIE.equals(cookie.getName())) {
+                final Cookie cleared = new Cookie(AUTO_LOGIN_SUPPRESS_COOKIE, "");
+                cleared.setPath("/");
+                cleared.setMaxAge(0);
+                cleared.setHttpOnly(true);
+                cleared.setSecure(request.isSecure());
+                response.addCookie(cleared);
+                return;
+            }
+        }
+    }
+
+    private TokenContext parseIdToken(final String idToken, final String providerId)
             throws JOSEException, ParseException, NotFoundException {
+        final SignedJWT signedJWT;
         if (isIdTokenEncrypted(idToken)) {
             final EncryptedJWT encryptedJWT = EncryptedJWT.parse(idToken);
             encryptedJWT.decrypt(new RSADecrypter(_keystoreService.getEncryptionPrivateKey(providerId)));
 
+            // The decrypted payload is the inner signed JWT, whose header carries the meaningful typ.
             final String decryptedPayload = encryptedJWT.getPayload().toString();
-            return SignedJWT.parse(decryptedPayload).getJWTClaimsSet();
+            signedJWT = SignedJWT.parse(decryptedPayload);
         } else {
-            return SignedJWT.parse(idToken).getJWTClaimsSet();
+            signedJWT = SignedJWT.parse(idToken);
         }
+        return new TokenContext(signedJWT.getJWTClaimsSet(), signedJWT.getHeader().toJSONObject());
+    }
+
+    /**
+     * Decides what an authenticated identity with no {@code (auth_user, openid, providerId)} mapping
+     * becomes, in this order:
+     *
+     * <ol>
+     *   <li><b>Link</b> to the account another provider already maps, when {@code linkExisting} is
+     *       configured for this provider on the interactive path. Preferred over both alternatives: it
+     *       keeps one person on one account, and unlike the merge page it works for someone whose account
+     *       this plugin provisioned and who therefore has no local password to enter.</li>
+     *   <li><b>Create</b> a new account, when {@code forceUserCreate} is set.</li>
+     *   <li><b>Divert</b> to the account merge page, where the person can prove ownership of an existing
+     *       XNAT account with its password.</li>
+     * </ol>
+     *
+     * @return the resolved user, or {@code null} when the response has been redirected to the merge page
+     *         and the caller should stop.
+     */
+    private UserI resolveOnMissingMapping(final String providerId, final OpenIdConnectUserDetails user,
+                                          final String requesterUsername,
+                                          final UsernameAuthMappingNotFoundException notFound,
+                                          final HttpServletRequest request, final HttpServletResponse response)
+            throws AuthenticationException, IOException {
+        final UserI linked = _userResolver.linkExistingIfConfigured(providerId, AuthPath.ID_TOKEN, requesterUsername);
+        if (linked != null) {
+            return linked;
+        }
+        if (Boolean.parseBoolean(_plugin.getProperty(providerId, "forceUserCreate"))) {
+            return _userResolver.createUser(providerId, user);
+        }
+        // Give users an option to register or connect OpenID Account with an XNAT account
+        log.info("User {} attempted to log using authentication provider ID {}, diverting to account merge page.",
+                user.getUsername(), providerId);
+        request.getSession().setAttribute(UsernameAuthMappingNotFoundException.class.getSimpleName(),
+                new UsernameAuthMappingNotFoundException(notFound.getUsername(), notFound.getAuthMethod(),
+                        notFound.getAuthMethodId(), user.getEmail(), user.getLastname(), user.getFirstname()));
+        response.sendRedirect(TurbineUtils.GetFullServerPath() + "/app/template/RegisterExternalLogin.vm");
+        return null;
     }
 
     private boolean isIdTokenEncrypted(final String idToken) {
         return idToken.split("\\.").length == 5;
     }
 
-    private UserI createUserAccount(final String providerId, final OpenIdConnectUserDetails user) throws AuthenticationException {
-        // Use standard XNAT provider attributes (auto.enabled/auto.verified) for consistency with other authentication providers
-        boolean autoEnabled = _plugin.isAutoEnabled(providerId);
-        boolean autoVerified = _plugin.isAutoVerified(providerId);
-
-        UserI xdatUser = Users.createUser();
-        xdatUser.setLogin(sanitizeUsername(user.getUsername()));
-        xdatUser.setFirstname(user.getFirstname());
-        xdatUser.setLastname(user.getLastname());
-        xdatUser.setEmail(user.getEmail());
-        xdatUser.setEnabled(autoEnabled);
-        xdatUser.setVerified(autoVerified);
-
-        log.info("Create user, username: {}", xdatUser.getUsername());
+    /**
+     * Runs the claim-validation gates enabled for the interactive ID-token path against the parsed
+     * token claims. A gate failure means the credential is valid but the caller is not authorized;
+     * on this path the status code is invisible (the outcome is a login redirect), so it is mapped
+     * to {@link BadCredentialsException}, reusing the existing validation-failure handling. With no
+     * gates enabled this is a no-op.
+     */
+    void applyIdTokenClaimGates(final String providerId, final TokenContext token) {
         try {
-            UserI adminUser = Users.getAdminUser();
-            XdatUserAuth auth = new XdatUserAuth(user.getUsername(), XdatUserAuthService.OPENID, providerId, xdatUser.getLogin(), true, 0);
-            Users.save(xdatUser, adminUser, auth,
-                    false, new EventDetails(EventUtils.CATEGORY.DATA, EventUtils.TYPE.WEB_SERVICE,
-                            "Added User", "Requested by user " + adminUser.getUsername(),
-                            "Created new user " + user.getUsername() + " through OpenID connect."));
-            xdatUser.setAuthorization(auth);
-        } catch (Exception e) {
-            log.error("Failed to create user account for OpenID user {}", user.getUsername(), e);
-            throw new AuthenticationServiceException("Failed to create user account", e);
-        }
-
-        // Send email notifications
-        try {
-            if (!autoVerified) {
-                AdminUtils.sendNewUserVerificationEmail(xdatUser);
-            } else {
-                AdminUtils.sendNewUserNotification(xdatUser, "", "", "", new VelocityContext());
+            for (final ClaimGate gate : _gateFactory.gatesFor(providerId, AuthPath.ID_TOKEN)) {
+                gate.check(token);
             }
-        } catch (Exception e) {
-            log.error("Error sending email notification for user {}", xdatUser.getUsername(), e);
+        } catch (final ClaimGateException e) {
+            log.info("OpenID claim gate rejected user for provider '{}': {}", providerId, e.getMessage());
+            throw new BadCredentialsException(e.getMessage(), e);
         }
-
-        return xdatUser;
     }
 
-    private boolean shouldFilterEmailDomains(final String providerId) {
-        return Boolean.parseBoolean(StringUtils.defaultIfBlank(_plugin.getProperty(providerId, "shouldFilterEmailDomains"), "false"));
-    }
 
-    private List<String> getAllowedEmailDomains(final String providerId) {
-        return shouldFilterEmailDomains(providerId)
-                ? Arrays.stream(_plugin.getProperty(providerId, "allowedEmailDomains").split("\\s*,\\s*"))
-                .map(StringUtils::lowerCase)
-                .collect(Collectors.toList())
-                : ALL_DOMAINS;
-    }
-
-    private boolean isAllowedEmailDomain(final String email, final String providerId) {
-        if (!_allowedDomains.containsKey(providerId)) {
-            return false;
-        }
-        if (!shouldFilterEmailDomains(providerId)) {
-            return true;
-        }
-        final List<String> allowedDomains = _allowedDomains.get(providerId);
-        if (ListUtils.isEqualList(ALL_DOMAINS, allowedDomains)) {
-            return true;
-        }
-        final String[] emailParts = email.split("@");
-        final String domain = emailParts.length >= 2 ? emailParts[1] : null;
-        if (StringUtils.isBlank(domain)) {
-            log.warn("Couldn't parse a domain from the email address {}, returning false", email);
-            return false;
-        }
-        if (allowedDomains.contains(StringUtils.lowerCase(domain))) {
-            log.debug("Matched email {} with allowed domain {} for provider {}", email, _allowedDomains, providerId);
-            return true;
-        }
-        log.debug("Email {} did not match any allowed domains for provider {}: {}", email, providerId, StringUtils.join(_allowedDomains, ", "));
-        return false;
-    }
-
-    protected SiteConfigPreferences getSiteConfigPreferences() {
-        return _siteConfigPreferences;
-    }
-
-    private Map<String, String> getUserInfo(final String accessToken, final String userInfoEndpoint) {
+    private Map<String, Object> getUserInfo(final String accessToken, final String userInfoEndpoint) {
         // See https://openid.net/specs/openid-connect-core-1_0.html#UserInfo
         final HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
         headers.set(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken);
         final Map<?, ?> body = _restTemplate.exchange(userInfoEndpoint, HttpMethod.GET, new HttpEntity<>(headers), Map.class).getBody();
-        return MapUtils.isEmpty(body) ? Collections.emptyMap() : GenericUtils.convertToTypedMap(body, String.class, String.class);
-    }
-
-    /**
-     * Replace all characters in the submitted username that are not alphanumeric, dash, underscore, apostrophe, or
-     * period with an underscore. This is useful for sanitizing usernames that may have been submitted by users
-     * that do not comply with the {@link Users#isValidUsername(String) required format}.
-     *
-     * @param candidate The proposed username to sanitize.
-     * @return The sanitized username.
-     * @throws IllegalArgumentException If the candidate username can't be sanitized to a valid username, e.g. too long or doesn't start with a letter.
-     */
-    // TODO: This is here to provide compatibility with older versions of XNAT, but eventually should use XNAT's version of this method.
-    private static String sanitizeUsername(final String candidate) {
-        final String transformed = RegExUtils.replaceAll(candidate, "[^a-zA-Z0-9-_'.]", "_");
-        if (!Users.isValidUsername(transformed)) {
-            throw new AuthenticationServiceException("The submitted username '" + candidate + "' does not comply with the required format and cannot be sanitized to a valid username.");
-        }
-        return transformed;
+        return MapUtils.isEmpty(body) ? Collections.emptyMap() : GenericUtils.convertToTypedMap(body, String.class, Object.class);
     }
 
     private static class NoopAuthenticationManager implements AuthenticationManager {

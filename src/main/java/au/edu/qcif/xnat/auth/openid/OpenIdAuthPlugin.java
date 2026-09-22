@@ -1,20 +1,3 @@
-/*
- *Copyright (C) 2018 Queensland Cyber Infrastructure Foundation (http://www.qcif.edu.au/)
- *
- *This program is free software: you can redistribute it and/or modify
- *it under the terms of the GNU General Public License as published by
- *the Free Software Foundation; either version 2 of the License, or
- *(at your option) any later version.
- *
- *This program is distributed in the hope that it will be useful,
- *but WITHOUT ANY WARRANTY; without even the implied warranty of
- *MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *GNU General Public License for more details.
- *
- *You should have received a copy of the GNU General Public License along
- *with this program; if not, write to the Free Software Foundation, Inc.,
- *51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
- */
 package au.edu.qcif.xnat.auth.openid;
 
 import au.edu.qcif.xnat.auth.openid.pkce.PkceAuthorizationCodeAccessTokenProvider;
@@ -53,6 +36,7 @@ import java.util.Properties;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.AUTO_LOGIN;
 import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.DEFAULT_REDIR_URI;
 import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.KEY_REDIR_URI;
 import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.PKCE_ENABLED;
@@ -150,6 +134,28 @@ public class OpenIdAuthPlugin {
         return _openIdProviders;
     }
 
+    /**
+     * Returns the id of the enabled provider that opts into auto-login on the login page
+     * ({@code openid.<providerId>.autoLogin=true}), or {@code null} if none do. Auto-login can only
+     * target a single identity provider, so if more than one opts in the first enabled one is used and a
+     * warning is logged.
+     *
+     * @return the auto-login provider id, or {@code null} if the feature is not enabled for any provider.
+     */
+    public String getAutoLoginProviderId() {
+        final List<String> autoLoginProviders = _openIdProviders.stream()
+                .filter(providerId -> Boolean.parseBoolean(getProperty(providerId, AUTO_LOGIN)))
+                .collect(Collectors.toList());
+        if (autoLoginProviders.isEmpty()) {
+            return null;
+        }
+        if (autoLoginProviders.size() > 1) {
+            log.warn("More than one provider has {} enabled ({}); using '{}' for auto-login.",
+                    AUTO_LOGIN, autoLoginProviders, autoLoginProviders.get(0));
+        }
+        return autoLoginProviders.get(0);
+    }
+
     @Bean
     public AccessTokenProvider accessTokenProvider() {
         return new AccessTokenProviderChain(Arrays.<AccessTokenProvider>asList(new PkceAuthorizationCodeAccessTokenProvider(stateKeyLength),
@@ -166,8 +172,18 @@ public class OpenIdAuthPlugin {
         // Interrogate request to get providerId (e.g. look at url if nothing
         // else)
         String providerId = request.getParameter("providerId");
+        if (providerId == null) {
+            // A callback carries no providerId parameter. Reuse what the outbound request recorded
+            // rather than writing null over it, which would lose the provider for the whole session.
+            providerId = (String) request.getSession().getAttribute("providerId");
+        }
         log.debug("Provider id is: {}", providerId);
+        Boolean manageXnatProjectAuthorizations = false;
+        try {
+            manageXnatProjectAuthorizations = Boolean.parseBoolean(getProperty(providerId, "xnatProjectAuthorizations"));
+        } catch(Exception ignored) {}
         request.getSession().setAttribute("providerId", providerId);
+        request.getSession().setAttribute("xnatProjectAuthorizations", manageXnatProjectAuthorizations);
         final OAuth2RestTemplate template = new OAuth2RestTemplate(getProtectedResourceDetails(providerId), clientContext);
         template.setAccessTokenProvider(accessTokenProvider());
         return template;

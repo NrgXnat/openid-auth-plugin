@@ -136,6 +136,13 @@ public class PkceAuthorizationCodeAccessTokenProvider extends AuthorizationCodeA
 			requestParameters.put("scope", String.join(" ", Optional.ofNullable(resource.getScope()).orElseGet(Collections::emptyList)));
 		}
 
+		// Forward an OIDC 'prompt' hint when the caller supplied one (e.g. prompt=none for auto-login);
+		// a normal login request has no prompt parameter and so is unaffected.
+		final String prompt = request.getFirst("prompt");
+		if (StringUtils.isNotBlank(prompt)) {
+			requestParameters.put("prompt", prompt);
+		}
+
 		final UserRedirectRequiredException redirectException = new UserRedirectRequiredException(resource.getUserAuthorizationUri(), requestParameters);
 
 		final String stateKey = stateKeyGenerator.generateKey(resource);

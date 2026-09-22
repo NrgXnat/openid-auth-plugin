@@ -1,20 +1,3 @@
-/*
- *Copyright (C) 2018 Queensland Cyber Infrastructure Foundation (http://www.qcif.edu.au/)
- *
- *This program is free software: you can redistribute it and/or modify
- *it under the terms of the GNU General Public License as published by
- *the Free Software Foundation; either version 2 of the License, or
- *(at your option) any later version.
- *
- *This program is distributed in the hope that it will be useful,
- *but WITHOUT ANY WARRANTY; without even the implied warranty of
- *MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *GNU General Public License for more details.
- *
- *You should have received a copy of the GNU General Public License along
- *with this program; if not, write to the Free Software Foundation, Inc.,
- *51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
- */
 package au.edu.qcif.xnat.auth.openid;
 
 import java.lang.reflect.Field;
@@ -38,19 +21,31 @@ import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.*;
 @SuppressWarnings({"ExternalizableWithoutPublicNoArgConstructor", "deprecation"})
 public class OpenIdConnectUserDetails extends XDATUser {
     private static final long    serialVersionUID         = -1568972028866924986L;
-    private static final Pattern EXTRACTOR                = Pattern.compile("\\[([a-zA-Z0-9_]+)]");
-    private static final String  DEFAULT_USERNAME_PATTERN = "[providerId]_[sub]";
+    /**
+     * Matches one {@code [claimName]} placeholder in a {@code usernamePattern}.
+     *
+     * <p>The accepted characters cover a URI as well as a bare name, because some providers will not emit
+     * a custom claim under a bare one — Auth0 requires custom claims to be namespaced
+     * ({@code https://example.org/upn}) and drops anything else that is not a registered OIDC claim.
+     * Reading such a claim always worked; only referring to it here did not.</p>
+     *
+     * <p>{@code ]} stays excluded, so a placeholder still ends at the first closing bracket and a pattern
+     * naming several claims cannot collapse into one greedy match.</p>
+     */
+    private static final Pattern EXTRACTOR                = Pattern.compile("\\[([a-zA-Z0-9_.:/-]+)]");
+    /** Applied when a provider configures no {@code usernamePattern}. */
+    public static final String   DEFAULT_USERNAME_PATTERN = "[providerId]_[sub]";
 
     private       OAuth2AccessToken   token;
     private       String              email;
-    private final Map<String, String> openIdUserInfo;
+    private final Map<String, Object> openIdUserInfo;
     private       String              firstName;
     private       String              lastName;
     private       String              username;
     private final String              providerId;
     private final OpenIdAuthPlugin    plugin;
 
-    public OpenIdConnectUserDetails(String providerId, Map<String, String> userInfo, OAuth2AccessToken token, OpenIdAuthPlugin plugin) {
+    public OpenIdConnectUserDetails(String providerId, Map<String, Object> userInfo, OAuth2AccessToken token, OpenIdAuthPlugin plugin) {
         this.openIdUserInfo = userInfo;
         this.providerId     = providerId;
         this.setUsername(resolvePattern(plugin.getProperty(providerId, USERNAME_PATTERN)));
@@ -69,7 +64,7 @@ public class OpenIdConnectUserDetails extends XDATUser {
             value = (String) field.get(this);
         } catch (Exception e) {
             if (openIdUserInfo != null) {
-                value = openIdUserInfo.get(fieldName);
+                value = String.valueOf(openIdUserInfo.get(fieldName));
             }
         }
         return value;
@@ -115,9 +110,9 @@ public class OpenIdConnectUserDetails extends XDATUser {
         this.lastName = lastname;
     }
 
-    private String getUserInfo(final Map<String, String> userInfo, String propName) {
-        String propVal = userInfo.get(plugin.getProperty(providerId, propName));
-        return propVal != null ? propVal : "";
+    private String getUserInfo(final Map<String, Object> userInfo, String propName) {
+        Object propVal = userInfo.get(plugin.getProperty(providerId, propName));
+        return propVal != null ? propVal.toString() : "";
     }
 
     private String resolvePattern(final String usernamePattern) {
@@ -136,7 +131,7 @@ public class OpenIdConnectUserDetails extends XDATUser {
         for (final String key : pairs.keySet()) {
             final String fieldName = pairs.get(key);
             final String fieldValue = getFieldValue(fieldName);
-            if (StringUtils.isBlank(fieldValue)) {
+            if (StringUtils.isBlank(fieldValue) || "null".equals(fieldValue)) {
                 throw new IllegalArgumentException(
                     "Cannot resolve username pattern '" + pattern + "': the claim or field '" + fieldName +
                     "' was not found or blank in the OpenID response. Available claims: " +

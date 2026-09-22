@@ -5,7 +5,7 @@
 
 buildscript {
     ext {
-        vXnat = "1.10.0"
+        vXnat = "1.10.1"
     }
 }
 
@@ -18,14 +18,12 @@ plugins {
     id "maven-publish"
     id "com.dorongold.task-tree" version "1.5"
     id "com.palantir.git-version" version "4.3.0"
-    id "io.franzbecker.gradle-lombok" version "5.0.0"
     id "io.spring.dependency-management" version "1.1.7"
-    id "net.linguica.maven-settings" version "0.5"
     id "org.nrg.xnat.build.xnat-data-builder" version "${vXnat}"
 }
 
 group = "au.edu.qcif.xnat.openid"
-version = "1.5.0"
+version "1.6.0"
 description = "XNAT OpenID Authentication Provider"
 
 repositories {
@@ -63,7 +61,10 @@ dependencyManagement {
 
 dependencies {
     implementation platform("org.nrg:parent:${vXnat}")
-
+    compileOnly "org.projectlombok:lombok"
+    annotationProcessor "org.projectlombok:lombok"
+    testCompileOnly "org.projectlombok:lombok"
+    testAnnotationProcessor "org.projectlombok:lombok"
     implementation "org.nrg.xnat:web"
     implementation "org.nrg:prefs"
     implementation "org.nrg:framework"
@@ -75,11 +76,40 @@ dependencies {
     implementation "org.apache.commons:commons-lang3"
     implementation "commons-io:commons-io"
     implementation "org.slf4j:slf4j-api"
+    implementation("turbine:turbine") {
+        exclude group: "commons-dbcp"
+        exclude group: "commons-email"
+        exclude group: "commons-pool"
+        exclude group: "fulcrum"
+        exclude group: "javax.activation", module: "activation"
+        exclude group: "javax.mail"
+        exclude group: "javax.servlet"
+        exclude group: "jython"
+        exclude group: "xalan"
+        exclude group: "xml-apis"
+        exclude group: "log4j", module: "log4j"
+        exclude group: "berkeleydb"
+        exclude group: "javax.sql"
+        exclude group: "jndi"
+        exclude group: "mysql"
+        exclude group: "tomcat"
+        exclude group: "xerces"
+        exclude group: "velocity", module: "texen"
+        exclude group: "jamon", module: "jamon"
+    }
+    compileOnly("org.apache.velocity:velocity") { transitive = false }
+    compileOnly "javax.servlet:javax.servlet-api"
     implementAndInclude("com.nimbusds:nimbus-jose-jwt:9.37.3")
     testImplementation "junit:junit"
     testImplementation "org.springframework:spring-test"
     testImplementation "com.github.tomakehurst:wiremock"
     testImplementation "org.mockito:mockito-core"
+    // Test-only: capture what the startup checks log. They are the whole point of those checks, and
+    // nothing else in the suite can observe them. Version comes from the XNAT parent platform.
+    testImplementation "ch.qos.logback:logback-classic"
+    testCompileOnly "javax.servlet:javax.servlet-api"
+    // Mockito ByteBuddy needs servlet-api at test runtime to introspect XnatAppInfo / xdat classes (see CHECKLIST §5.3)
+    testRuntimeOnly "javax.servlet:javax.servlet-api"
 }
 
 java {
@@ -94,7 +124,7 @@ compileJava {
 }
 
 jacoco {
-    toolVersion = dependencyManagement.importedProperties["jacoco.version"]
+    toolVersion = "0.8.12"
 }
 
 jacocoTestReport {
@@ -162,10 +192,6 @@ task xnatPluginJar(type: Jar) {
     with jar
 }
 
-lombok {
-    version = dependencyManagement.importedProperties["lombok.version"] as String
-    sha256 = dependencyManagement.importedProperties["lombok.checksum"] as String
-}
 
 tasks.withType(Jar).configureEach {
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
@@ -198,6 +224,19 @@ sourceSets {
 test {
     useJUnit()
     maxHeapSize = "1G"
+
+    testLogging {
+        // Log each test as it passes/skips/fails so CI shows live progress
+        // instead of going silent until the build finishes.
+        events "passed", "skipped", "failed"
+        // Forward the tests' own System.out/System.err to the build output.
+        showStandardStreams = true
+        // Print full stack traces (with causes) for failures.
+        exceptionFormat = "full"
+        showExceptions = true
+        showCauses = true
+        showStackTraces = true
+    }
 }
 
 publishing {
@@ -212,13 +251,13 @@ publishing {
             pom.withXml {
                 def root = asNode()
                 root.appendNode("name", project.description)
-                root.appendNode("url", "https://github.com/nrgxnat/xnat-openid-auth-plugin")
+                root.appendNode("url", "https://github.com/NrgXnat/openid-auth-plugin")
                 root.appendNode("inceptionYear", "2017")
 
                 root.appendNode("scm").with {
-                    appendNode("url", "https://github.com/nrgxnat/xnat-openid-auth-plugin")
-                    appendNode("connection", "scm:https://github.com/nrgxnat/xnat-openid-auth-plugin")
-                    appendNode("developerConnection", "scm:git@github.com:nrgxnat/xnat-openid-auth-plugin.git")
+                    appendNode("url", "https://github.com/NrgXnat/openid-auth-plugin")
+                    appendNode("connection", "scm:https://github.com/NrgXnat/openid-auth-plugin")
+                    appendNode("developerConnection", "scm:git@github.com:NrgXnat/openid-auth-plugin.git")
                 }
 
                 root.appendNode("licenses").appendNode("license").with {
@@ -259,9 +298,17 @@ publishing {
     }
     repositories {
         maven {
-            url = "https://nrgxnat.jfrog.io/nrgxnat/libs-${project.version.endsWith("-SNAPSHOT") ? "snapshot" : "release"}"
-            // The value for name must match <id> in ~/.m2/settings.xml
             name = "XNAT_Artifactory"
+            url = project.version.toString().endsWith("-SNAPSHOT")
+                ? "https://nrgxnat.jfrog.io/nrgxnat/libs-snapshot-local"
+                : "https://nrgxnat.jfrog.io/nrgxnat/libs-release-local"
+            // CI injects ORG_GRADLE_PROJECT_artifactoryUser/Token env vars (Gradle maps
+            // these to project properties). Local devs can set artifactoryUser/Token in
+            // ~/.gradle/gradle.properties. Mirrors monorepo's buildSrc convention.
+            credentials {
+                username = (project.findProperty("artifactoryUser")  ?: System.getenv("ARTIFACTORY_USER"))  ?: ""
+                password = (project.findProperty("artifactoryToken") ?: System.getenv("ARTIFACTORY_TOKEN")) ?: ""
+            }
         }
     }
 }

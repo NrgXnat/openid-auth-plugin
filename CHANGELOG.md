@@ -2,6 +2,45 @@
 
 Adds OpenID Connect (OIDC) authentication support to XNAT.
 
+## <a name="1.6.0"></a>OpenID Authentication Plugin Version 1.6.x Release Notes
+
+### <a name="1.6.0"></a>Version 1.6.0
+
+#### 1.6.0 - New Features
+* Added optional, configurable claim-validation gates for token authorization:
+    * **Audience (`aud`) gate** — rejects a token whose audience does not contain one of the configured accepted audiences (`openid.<providerId>.audCheck.acceptedAudiences`).
+    * **Role gate** — rejects a token that carries none of the configured required roles (any-of), read from a configurable nested claim path such as `resource_access.<client>.roles` (`openid.<providerId>.roleCheck.rolePath` and `roleCheck.requiredRoles`).
+    * Both gates are opt-in (default off). Every gate property — including the enable toggles — can be set once per provider (e.g. `openid.<providerId>.audCheck.enabled`) to apply to all paths, or scoped to a single path (e.g. `openid.<providerId>.idToken.audCheck.enabled`, `openid.<providerId>.bearer.roleCheck.rolePath`), where the path-scoped value overrides the shared one. Wired into the interactive ID-token path; the path-agnostic gate infrastructure is ready for the upcoming bearer-token path. See the README for full configuration details.
+* Added an opt-in **bearer-token authentication** path: REST requests presenting `Authorization: Bearer <jwt>` (an access token minted by the provider) are authenticated directly.
+    * The token is fully validated — RSA signature against the provider's JWKS, plus `iss` and `exp` — since it arrives from an untrusted client. Configure `openid.<providerId>.bearer.enabled`, `openid.<providerId>.issuer`, and `openid.<providerId>.jwksUri`.
+    * Invalid/expired/wrong-issuer tokens return **401**; a valid token that fails a `bearer.*` claim gate, has an email domain off the whitelist, maps to no XNAT account (with auto-create off), or hits a disabled/unverified/locked account returns **403**.
+    * The bearer path enforces the **same account policy as interactive login**: the email-domain whitelist (`shouldFilterEmailDomains`/`allowedEmailDomains`) and the site's email-verification requirement now apply to bearer callers too (shared with the interactive path via `OpenIdAccountPolicy`).
+    * The **audience (`aud`) gate is on by default** for the bearer path (`openid.<providerId>.bearer.audCheck.enabled` defaults to `true`; the interactive path stays off by default), since on an untrusted token `aud` is the confinement boundary against cross-client replay. Configure `openid.<providerId>.audCheck.acceptedAudiences` or every bearer token is rejected with 403 (fail-closed; logged at startup). Set `bearer.audCheck.enabled=false` to opt out.
+    * Successful bearer authentications publish a Spring Security authentication-success event and write an XNAT `AccessLogger` audit entry, matching the interactive path.
+    * The path is stateless and short-circuits when the request is already authenticated. Auto-create honors `openid.<providerId>.bearer.forceUserCreate`, falling back to `openid.<providerId>.forceUserCreate`.
+    * Statelessness is enforced on two fronts: the authentication token is `@Transient` so Spring's `SecurityContextPersistenceFilter` does not persist it, and the successful request is continued behind a wrapper that prevents downstream filters (e.g. XNAT's `XnatExpiredPasswordFilter`, which calls `request.getSession()` unconditionally) from making the container create a session — so no `JSESSIONID` cookie is emitted.
+* Added an opt-in **account-linking** policy (`openid.<providerId>.linkExisting.enabled`): on a mapping miss, the identity is attached to the XNAT account that another provider's mapping already names, instead of being refused or given a second, permissionless account.
+    * `openid.<providerId>.linkExisting.sourceProvider` is required and names the provider whose accounts already exist. There is no fallback to "any mapping with this name."
+    * Matching is on the value each provider's `usernamePattern` resolves to, compared against the source provider's `auth_user`. The comparison is case-sensitive.
+    * Applies to both the interactive and bearer paths, configured once per provider or scoped per path like the claim gates. Off by default; never creates accounts; grants nothing — the linked account's project membership is unchanged.
+    * Both the account holder and the site administrator are emailed when a link is made, off the authentication path.
+    * Configurations that cannot match — either side keyed on `[providerId]` or `[sub]`, or a source provider that is not configured — are reported at startup.
+* `usernamePattern` can now name a claim by URI, e.g. `[https://example.org/upn]`. Providers that namespace custom claims (Auth0 among them) emit them under names the previous placeholder syntax — letters, digits and underscore only — could not express.
+
+* Added opt-in **auto-login** (`openid.<providerId>.autoLogin`): an unauthenticated visitor to the login page is sent straight into this provider's flow using OIDC `prompt=none`, skipping the "Sign in with ..." button. A visitor who already has a session at the provider lands in XNAT; otherwise the provider reports that interaction is required and the normal login page is shown.
+    * An attempt sets a one-shot guard cookie (2 minutes) so a signed-out visitor is not caught in a redirect loop; once it expires a later visit tries again, which also picks up someone who has since signed in at the provider.
+    * Only anonymous visitors are redirected, and the provider must support `prompt=none`.
+    * Only one provider may enable it. If more than one does, the first is used and a warning is logged. Other providers' sign-in links still appear whenever the automatic attempt does not sign the visitor straight in, so this suits a deployment with a single primary identity provider.
+* Added **unified logout** (`openid.<providerId>.logoutUri`), meaningful only alongside `autoLogin`: without it, logging out of XNAT would be undone by the next automatic `prompt=none` request while the provider session is still live.
+    * **Set** — the plugin performs [OpenID Connect RP-Initiated Logout](https://openid.net/specs/openid-connect-rpinitiated-1_0.html) against the provider's end-session endpoint, sending `post_logout_redirect_uri`, plus `id_token_hint` and `client_id` where available, then returns to the XNAT login page. Register XNAT's login URL as an allowed post-logout redirect on the client. The id_token is held server-side and stored only when `logoutUri` is set; per the spec the hint does travel in the redirect URL, so it reaches browser history and provider logs.
+    * **Unset** — there is no end-session endpoint to redirect to, so logout instead sets a session cookie that keeps auto-login off until the browser closes or the user signs in explicitly.
+    * Behind an edge proxy that already brokers OIDC (e.g. oauth2-proxy), point this at the proxy's sign-out endpoint so the proxy's own session is cleared and the provider's end-session is chained.
+    * An idle XNAT timeout is routed through XNAT's logout for browser requests, so it behaves like clicking Logout; a non-interactive request carrying only a stale session cookie gets a 401 rather than a login redirect. A timeout has no `id_token_hint` (the token expired with the session), so a provider end-session endpoint that requires one shows a "Do you want to log out?" page an idle user never answers -- XNAT's session ends but the SSO session lingers. A proxy-style sign-out URL needs no hint and clears it fully.
+
+#### 1.6.0 - Fixes
+* Account creation now refuses when a provider's `usernamePattern` resolves to a login an XNAT account already holds and no mapping links the two. Previously this reached `Users.save`, which takes its update branch for an existing login and discards the new mapping, so the sign-in appeared to succeed while silently modifying an unrelated account. **This changes behaviour for existing deployments** that have a colliding `usernamePattern` and `forceUserCreate` on: those logins used to go through and now fail, with the collision named in the log. Configure `linkExisting.sourceProvider` to attach deliberately, or change the pattern so it stops colliding.
+
+
 ## <a name="1.5.0"></a>OpenID Authentication Plugin Version 1.5.x Release Notes
 **BREAKING CHANGE:** 1.5.0 is compiled in Java21 and has dependency updates that require XNAT 1.10.0. 
 
