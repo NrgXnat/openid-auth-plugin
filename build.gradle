@@ -23,7 +23,7 @@ plugins {
 }
 
 group = "au.edu.qcif.xnat.openid"
-version "1.6.0-RC-SNAPSHOT"
+version "1.6.0"
 description = "XNAT OpenID Authentication Provider"
 
 repositories {
