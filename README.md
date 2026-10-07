@@ -126,6 +126,14 @@ Behind an edge proxy that already brokers OIDC (e.g. oauth2-proxy), point `logou
 
 Notes: with unified logout the provider must allow XNAT's post-logout redirect URI, so register the XNAT login URL as an allowed post-logout redirect on the client. Sending `id_token_hint` requires the ID token, which the plugin keeps server-side (never in a browser cookie, never readable by JavaScript) and stores only when `logoutUri` is set. Per the RP-Initiated Logout spec the hint does travel in the end-session redirect URL, so it reaches browser history and the provider's logs — note it is an audience-restricted ID token, not an access or refresh token.
 
+### openid.`providerId`.followProviderSession
+
+When set to `true`, an XNAT session signed in through this provider ends when the provider (SSO) session does. At sign-in the plugin keeps the provider's refresh token, server-side like the ID token above. Once the access token issued with it has expired, the next request refreshes it at the provider's token endpoint. If the provider rejects the refresh with `invalid_grant` — its session timed out or reached its maximum lifetime, or the user logged out of another application on the same provider — the XNAT session is ended and the request is handled like any other request with an expired session. A successful refresh counts as activity at the provider, so using XNAT keeps the provider session alive. Works with or without `autoLogin`. Defaults to `false`.
+
+The check runs at most once per access-token lifetime, so a logout elsewhere reaches XNAT within that time (five minutes with Keycloak's defaults). Any other failure — the provider unreachable, the client rejected — keeps the XNAT session and retries a minute later, so a provider outage doesn't sign everyone out. The provider must issue a refresh token for the configured scopes; if it doesn't, a warning is logged at sign-in and that session isn't checked.
+
+With this on, the provider's idle timeout is the one that matters. Set XNAT's own session timeout at or above it, so XNAT's timer doesn't end the session first.
+
 ### openid.`providerId`.shouldFilterEmailDomains
 
 Controls whether domains of the email should be compared against the whitelist: `allowedEmailDomains`.

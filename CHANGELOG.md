@@ -2,6 +2,13 @@
 
 Adds OpenID Connect (OIDC) authentication support to XNAT.
 
+## <a name="1.7.0"></a>OpenID Authentication Plugin Version 1.7.x Release Notes
+
+### <a name="1.7.0"></a>Version 1.7.0
+
+#### 1.7.0 - New Features
+* Added opt-in `openid.<providerId>.followProviderSession`: an XNAT session ends when the provider (SSO) session it was signed in with ends — by timeout, maximum lifetime, or a logout from another application. Sign-in keeps the provider's refresh token server-side; once the access token expires, the next request refreshes it, and a refresh the provider rejects as `invalid_grant` ends the XNAT session. Any other failure keeps the session and retries a minute later. See the README.
+
 ## <a name="1.6.0"></a>OpenID Authentication Plugin Version 1.6.x Release Notes
 
 ### <a name="1.6.0"></a>Version 1.6.0
