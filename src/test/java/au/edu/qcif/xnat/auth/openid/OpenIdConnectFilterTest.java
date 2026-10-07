@@ -1,6 +1,7 @@
 package au.edu.qcif.xnat.auth.openid;
 
 import au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant;
+import au.edu.qcif.xnat.auth.openid.security.ProviderSessionFilter;
 import au.edu.qcif.xnat.auth.openid.tokens.OpenIdAuthToken;
 import com.github.tomakehurst.wiremock.junit.WireMockRule;
 import org.apache.commons.io.IOUtils;
@@ -66,6 +67,8 @@ public class OpenIdConnectFilterTest {
         final Map<String, Object> body = new HashMap<>();
         body.put(ACCESS_TOKEN, TEST_ACCESS_TOKEN);
         body.put(ID_TOKEN, JwtHelper.encode(readFile("id_token.json"), new MacSigner("secret")).getEncoded());
+        body.put("refresh_token", "test-refresh-token");
+        body.put("expires_in", 300);
         final String json = serializer.toJson(body);
 
         stubFor(post(urlEqualTo("/token")).willReturn(aResponse()
@@ -88,6 +91,9 @@ public class OpenIdConnectFilterTest {
         assertTrue(authentication instanceof OpenIdAuthToken);
         final OpenIdAuthToken token = (OpenIdAuthToken) authentication;
         assertEquals(token.getProviderId(), TEST_PROVIDER_ID);
+        // The test provider sets followProviderSession, so sign-in keeps what the session check needs.
+        assertEquals("test-refresh-token", request.getSession().getAttribute(ProviderSessionFilter.REFRESH_TOKEN_ATTR));
+        assertNotNull(request.getSession().getAttribute(ProviderSessionFilter.CHECK_AT_ATTR));
     }
 
     private String readFile(String fileName) throws IOException {

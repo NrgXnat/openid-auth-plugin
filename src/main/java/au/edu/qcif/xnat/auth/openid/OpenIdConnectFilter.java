@@ -5,6 +5,7 @@ import au.edu.qcif.xnat.auth.openid.gate.ClaimGate;
 import au.edu.qcif.xnat.auth.openid.gate.ClaimGateException;
 import au.edu.qcif.xnat.auth.openid.gate.ClaimGateFactory;
 import au.edu.qcif.xnat.auth.openid.gate.TokenContext;
+import au.edu.qcif.xnat.auth.openid.security.ProviderSessionFilter;
 import au.edu.qcif.xnat.auth.openid.service.KeystoreService;
 import au.edu.qcif.xnat.auth.openid.tokens.OpenIdAuthRequestToken;
 import au.edu.qcif.xnat.auth.openid.tokens.OpenIdAuthToken;
@@ -63,6 +64,7 @@ import org.nrg.xdat.XDAT;
 import org.springframework.beans.factory.annotation.Qualifier;
 import java.util.Optional;
 import java.util.concurrent.Executor;
+import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.FOLLOW_PROVIDER_SESSION;
 import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.LOGOUT_URI;
 import org.nrg.xnat.security.OnXnatLogin;
 
@@ -321,6 +323,10 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
             // configured for this provider -- no point storing it (or the PII it carries) otherwise.
             if (StringUtils.isNotBlank(_plugin.getProperty(providerId, LOGOUT_URI))) {
                 request.getSession().setAttribute(ID_TOKEN_SESSION_ATTR, idToken);
+            }
+            // Keep the refresh token when this XNAT session is to end with the provider session.
+            if (Boolean.parseBoolean(_plugin.getProperty(providerId, FOLLOW_PROVIDER_SESSION))) {
+                ProviderSessionFilter.remember(request.getSession(), providerId, accessToken);
             }
 
             return authentication;

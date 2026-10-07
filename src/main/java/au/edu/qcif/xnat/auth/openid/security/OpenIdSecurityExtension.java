@@ -8,9 +8,11 @@ import org.apache.commons.lang3.StringUtils;
 import org.nrg.xnat.security.BaseXnatSecurityExtension;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.oauth2.client.filter.OAuth2ClientContextFilter;
+import org.springframework.security.web.authentication.AnonymousAuthenticationFilter;
 import org.springframework.security.web.authentication.preauth.AbstractPreAuthenticatedProcessingFilter;
 import org.springframework.stereotype.Component;
 
+import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.FOLLOW_PROVIDER_SESSION;
 import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.LOGOUT_URI;
 import static org.nrg.xdat.services.XdatUserAuthService.OPENID;
 
@@ -45,6 +47,11 @@ public class OpenIdSecurityExtension extends BaseXnatSecurityExtension {
                 } else {
                     http.addFilterAfter(new OAuth2ClientContextFilter(), AbstractPreAuthenticatedProcessingFilter.class)
                             .addFilterAfter(openIdConnectFilter, OAuth2ClientContextFilter.class);
+                }
+                // Well after the sign-in filters above, which end the chain on their own paths, so a
+                // sign-in callback never reaches the session check.
+                if (hasAnyFollowProviderSessionProvider()) {
+                    http.addFilterBefore(new ProviderSessionFilter(openIdAuthPlugin), AnonymousAuthenticationFilter.class);
                 }
                 configureLogoutAndTimeout(http);
             }
@@ -88,6 +95,12 @@ public class OpenIdSecurityExtension extends BaseXnatSecurityExtension {
     private boolean hasAnyBearerProvider() {
         return openIdAuthPlugin.getEnabledProviders().stream()
                 .anyMatch(providerId -> Boolean.parseBoolean(openIdAuthPlugin.getProperty(providerId, "bearer.enabled")));
+    }
+
+    /** True if at least one configured provider ties its XNAT sessions to the provider session. */
+    private boolean hasAnyFollowProviderSessionProvider() {
+        return openIdAuthPlugin.getEnabledProviders().stream()
+                .anyMatch(providerId -> Boolean.parseBoolean(openIdAuthPlugin.getProperty(providerId, FOLLOW_PROVIDER_SESSION)));
     }
 
     public String getAuthMethod() {
