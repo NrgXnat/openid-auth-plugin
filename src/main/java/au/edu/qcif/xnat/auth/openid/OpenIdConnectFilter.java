@@ -89,6 +89,7 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
      * than an {@code HttpSession} attribute because the guard must survive the
      * {@code Login.vm -> /openid-login -> provider -> callback} redirect chain, across which the session does
      * not reliably persist (the Turbine login page and the Spring filter can observe different sessions).
+     * Cleared here on a successful interactive login, so a later visit to the login page is not held back by it.
      */
     public static final String AUTO_LOGIN_ATTEMPTED_COOKIE = "OPENID_AUTOLOGIN_TRIED";
 
@@ -316,7 +317,7 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
             org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(authRequestToken);
             AccessLogger.LogServiceAccess(xdatUser.getUsername(), request, "Authentication", "SUCCESS");
             UserHelper.setUserHelper(request, user);
-            clearAutoLoginSuppressionCookie(request, response);
+            clearAutoLoginCookies(request, response);
             // Keep the id_token for unified logout's id_token_hint, but only when an end-session URL is
             // configured for this provider -- no point storing it (or the PII it carries) otherwise.
             if (StringUtils.isNotBlank(_plugin.getProperty(providerId, LOGOUT_URI))) {
@@ -403,22 +404,22 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
     }
 
     /**
-     * Clears the {@link #AUTO_LOGIN_SUPPRESS_COOKIE} once the user has signed in explicitly, re-arming
-     * auto-login for a future session. No-op when the cookie is not present on the request.
+     * Clears the auto-login cookies once the user has signed in, re-arming auto-login: the
+     * {@link #AUTO_LOGIN_SUPPRESS_COOKIE} left by a logout, and the {@link #AUTO_LOGIN_ATTEMPTED_COOKIE} guard left
+     * by the attempt that may have just succeeded. Only cookies present on the request are cleared.
      */
-    static void clearAutoLoginSuppressionCookie(final HttpServletRequest request, final HttpServletResponse response) {
+    static void clearAutoLoginCookies(final HttpServletRequest request, final HttpServletResponse response) {
         if (request.getCookies() == null) {
             return;
         }
         for (final Cookie cookie : request.getCookies()) {
-            if (AUTO_LOGIN_SUPPRESS_COOKIE.equals(cookie.getName())) {
-                final Cookie cleared = new Cookie(AUTO_LOGIN_SUPPRESS_COOKIE, "");
+            if (AUTO_LOGIN_SUPPRESS_COOKIE.equals(cookie.getName()) || AUTO_LOGIN_ATTEMPTED_COOKIE.equals(cookie.getName())) {
+                final Cookie cleared = new Cookie(cookie.getName(), "");
                 cleared.setPath("/");
                 cleared.setMaxAge(0);
                 cleared.setHttpOnly(true);
                 cleared.setSecure(request.isSecure());
                 response.addCookie(cleared);
-                return;
             }
         }
     }
