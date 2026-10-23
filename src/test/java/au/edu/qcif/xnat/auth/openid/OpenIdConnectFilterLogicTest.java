@@ -29,6 +29,7 @@ import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -181,27 +182,31 @@ public class OpenIdConnectFilterLogicTest {
     }
 
     @Test
-    public void clearsAutoLoginSuppressionCookieWhenPresent() {
+    public void clearsAutoLoginCookiesWhenPresent() {
         final HttpServletRequest request = mock(HttpServletRequest.class);
         final HttpServletResponse response = mock(HttpServletResponse.class);
-        when(request.getCookies()).thenReturn(new Cookie[]{new Cookie(OpenIdConnectFilter.AUTO_LOGIN_SUPPRESS_COOKIE, "1")});
+        when(request.getCookies()).thenReturn(new Cookie[]{
+                new Cookie(OpenIdConnectFilter.AUTO_LOGIN_SUPPRESS_COOKIE, "1"),
+                new Cookie(OpenIdConnectFilter.AUTO_LOGIN_ATTEMPTED_COOKIE, "1"),
+                new Cookie("JSESSIONID", "abc")});
         when(request.isSecure()).thenReturn(true);
 
-        OpenIdConnectFilter.clearAutoLoginSuppressionCookie(request, response);
+        OpenIdConnectFilter.clearAutoLoginCookies(request, response);
 
         final ArgumentCaptor<Cookie> captor = ArgumentCaptor.forClass(Cookie.class);
-        verify(response).addCookie(captor.capture());
-        assertEquals(OpenIdConnectFilter.AUTO_LOGIN_SUPPRESS_COOKIE, captor.getValue().getName());
-        assertEquals("expiring the cookie", 0, captor.getValue().getMaxAge());
+        verify(response, times(2)).addCookie(captor.capture());
+        assertEquals(OpenIdConnectFilter.AUTO_LOGIN_SUPPRESS_COOKIE, captor.getAllValues().get(0).getName());
+        assertEquals(OpenIdConnectFilter.AUTO_LOGIN_ATTEMPTED_COOKIE, captor.getAllValues().get(1).getName());
+        captor.getAllValues().forEach(cookie -> assertEquals("expiring the cookie", 0, cookie.getMaxAge()));
     }
 
     @Test
-    public void clearAutoLoginSuppressionCookieIsNoOpWhenAbsent() {
+    public void clearAutoLoginCookiesIsNoOpWhenAbsent() {
         final HttpServletRequest request = mock(HttpServletRequest.class);
         final HttpServletResponse response = mock(HttpServletResponse.class);
         when(request.getCookies()).thenReturn(null);
 
-        OpenIdConnectFilter.clearAutoLoginSuppressionCookie(request, response);
+        OpenIdConnectFilter.clearAutoLoginCookies(request, response);
 
         verify(response, never()).addCookie(any());
     }
