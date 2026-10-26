@@ -4,6 +4,7 @@ import au.edu.qcif.xnat.auth.openid.OpenIdAuthPlugin;
 import au.edu.qcif.xnat.auth.openid.gate.ClaimGateException;
 import au.edu.qcif.xnat.auth.openid.gate.ClaimGateFactory;
 import au.edu.qcif.xnat.auth.openid.gate.TokenContext;
+import au.edu.qcif.xnat.auth.openid.jwt.JwtValidatorRegistry;
 import com.nimbusds.jwt.JWTClaimsSet;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -39,7 +40,7 @@ public class BearerTokenAuthenticationFilterGateTest {
         providerProps.forEach((key, value) -> lenient().when(plugin.getProperty(PROVIDER, key)).thenReturn(value));
         // Only the gate factory matters here; the other collaborators are unused by applyBearerClaimGates.
         return new BearerTokenAuthenticationFilter(plugin, new BearerTokenExtractor(), null,
-                Collections.emptyMap(), new ClaimGateFactory(plugin), null, null, null);
+                new JwtValidatorRegistry(Collections.emptyMap()), new ClaimGateFactory(plugin), null, null, null);
     }
 
     private static void applyBearerClaimGates(final BearerTokenAuthenticationFilter filter, final String providerId,

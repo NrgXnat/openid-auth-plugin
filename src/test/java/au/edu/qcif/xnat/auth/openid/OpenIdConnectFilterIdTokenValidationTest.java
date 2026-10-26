@@ -1,6 +1,7 @@
 package au.edu.qcif.xnat.auth.openid;
 
 import au.edu.qcif.xnat.auth.openid.jwt.JwtValidationException;
+import au.edu.qcif.xnat.auth.openid.jwt.JwtValidatorRegistry;
 import au.edu.qcif.xnat.auth.openid.service.KeystoreService;
 import com.github.tomakehurst.wiremock.junit.WireMockRule;
 import com.nimbusds.jose.EncryptionMethod;
@@ -81,7 +82,8 @@ public class OpenIdConnectFilterIdTokenValidationTest {
         lenient().when(plugin.getRedirectUri()).thenReturn("/openid/callback");
         lenient().when(plugin.getEnabledProviders()).thenReturn(Collections.singletonList(PROVIDER));
         providerProps.forEach((key, value) -> lenient().when(plugin.getProperty(PROVIDER, key)).thenReturn(value));
-        return new OpenIdConnectFilter(plugin, eventPublisher, userAuthService, siteConfigPreferences, keystoreService, Runnable::run);
+        return new OpenIdConnectFilter(plugin, eventPublisher, userAuthService, siteConfigPreferences, keystoreService,
+                new JwtValidatorRegistry(plugin), Runnable::run);
     }
 
     private Map<String, String> issuerAndJwksUri() {
@@ -141,10 +143,30 @@ public class OpenIdConnectFilterIdTokenValidationTest {
     }
 
     @Test
-    public void skipsValidationWithoutIssuerAndJwksUri() throws Exception {
-        final OpenIdConnectFilter filter = filterWith(Collections.singletonMap("idToken.validate.enabled", "true"));
+    public void ignoresTheCaseOfTheSetting() throws Exception {
+        final Map<String, String> props = issuerAndJwksUri();
+        props.put("idToken.validate.enabled", "FALSE");
 
-        assertAccepted(filter, signedIdToken(strangerKey));
+        assertAccepted(filterWith(props), signedIdToken(strangerKey));
+    }
+
+    @Test
+    public void skipsValidationWithoutIssuerAndJwksUri() throws Exception {
+        assertAccepted(filterWith(Collections.emptyMap()), signedIdToken(strangerKey));
+    }
+
+    @Test(expected = IllegalStateException.class)
+    public void refusesToStartWhenRequiredWithoutIssuerAndJwksUri() {
+        filterWith(Collections.singletonMap("idToken.validate.enabled", "true"));
+    }
+
+    @Test(expected = IllegalStateException.class)
+    public void refusesToStartWhenRequiredWithMalformedJwksUri() {
+        final Map<String, String> props = issuerAndJwksUri();
+        props.put("jwksUri", "/jwks");
+        props.put("idToken.validate.enabled", "true");
+
+        filterWith(props);
     }
 
     @Test

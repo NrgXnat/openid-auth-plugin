@@ -7,6 +7,7 @@ import au.edu.qcif.xnat.auth.openid.gate.ClaimGateFactory;
 import au.edu.qcif.xnat.auth.openid.gate.TokenContext;
 import au.edu.qcif.xnat.auth.openid.jwt.JwtValidationException;
 import au.edu.qcif.xnat.auth.openid.jwt.JwtValidator;
+import au.edu.qcif.xnat.auth.openid.jwt.JwtValidatorRegistry;
 import au.edu.qcif.xnat.auth.openid.service.KeystoreService;
 import au.edu.qcif.xnat.auth.openid.tokens.OpenIdAuthRequestToken;
 import au.edu.qcif.xnat.auth.openid.tokens.OpenIdAuthToken;
@@ -57,14 +58,10 @@ import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import javax.servlet.http.HttpSession;
 import java.io.IOException;
-import java.net.MalformedURLException;
-import java.net.URI;
-import java.net.URISyntaxException;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.text.ParseException;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
@@ -127,7 +124,7 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter
     private final ClaimGateFactory _gateFactory;
     private final OpenIdUserResolver _userResolver;
     private final OpenIdAccountPolicy _accountPolicy;
-    private final Map<String, JwtValidator> _idTokenValidators;
+    private final JwtValidatorRegistry _validators;
     private final AtomicBoolean _configReported = new AtomicBoolean();
 
     private OAuth2RestTemplate _restTemplate;
@@ -145,9 +142,11 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter
                                final XdatUserAuthService userAuthService,
                                final SiteConfigPreferences siteConfigPreferences,
                                final KeystoreService keystoreService,
+                               final JwtValidatorRegistry validators,
                                @Qualifier("asyncTaskExecutor") final Executor notifier) {
         super(plugin.getRedirectUri());
         log.debug("Creating filter for URL {}", plugin.getRedirectUri());
+        requireConfiguredIdTokenValidation(plugin, validators);
         setAuthenticationManager(new NoopAuthenticationManager());
         _plugin = plugin;
         _eventPublisher = eventPublisher;
@@ -155,7 +154,7 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter
         _gateFactory = new ClaimGateFactory(plugin);
         _userResolver = new OpenIdUserResolver(plugin, userAuthService, notifier);
         _accountPolicy = new OpenIdAccountPolicy(plugin, siteConfigPreferences);
-        _idTokenValidators = buildIdTokenValidators(plugin);
+        _validators = validators;
     }
 
     /** Test seam: inject the user resolver so the missing-mapping branches can be driven directly. */
@@ -172,7 +171,7 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter
         _gateFactory = new ClaimGateFactory(plugin);
         _userResolver = userResolver;
         _accountPolicy = new OpenIdAccountPolicy(plugin, siteConfigPreferences);
-        _idTokenValidators = buildIdTokenValidators(plugin);
+        _validators = new JwtValidatorRegistry(plugin);
     }
 
     // Reported here rather than from the constructor, which runs before the plugin's logging is configured.
@@ -182,7 +181,7 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter
             return;
         }
         for (final String providerId : _plugin.getEnabledProviders()) {
-            if (!_idTokenValidators.containsKey(providerId) && !isIdTokenValidationDisabled(_plugin, providerId)) {
+            if (_validators.get(providerId) == null && !isIdTokenValidationDisabled(_plugin, providerId)) {
                 log.warn("ID tokens from provider '{}' are not validated: openid.{}.{} and openid.{}.{} must both be "
                                 + "set to valid values. Set openid.{}.{}=false to silence this warning.",
                         providerId, providerId, ISSUER, providerId, JWKS_URI, providerId, ID_TOKEN_VALIDATE);
@@ -190,25 +189,23 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter
         }
     }
 
-    private static Map<String, JwtValidator> buildIdTokenValidators(final OpenIdAuthPlugin plugin) {
-        final Map<String, JwtValidator> validators = new HashMap<>();
+    private static void requireConfiguredIdTokenValidation(final OpenIdAuthPlugin plugin,
+                                                           final JwtValidatorRegistry validators) {
         for (final String providerId : plugin.getEnabledProviders()) {
-            final String issuer = StringUtils.trimToNull(plugin.getProperty(providerId, ISSUER));
-            final String jwksUri = StringUtils.trimToNull(plugin.getProperty(providerId, JWKS_URI));
-            if (isIdTokenValidationDisabled(plugin, providerId) || issuer == null || jwksUri == null) {
-                continue;
-            }
-            try {
-                validators.put(providerId, JwtValidator.forRemoteJwks(issuer, new URI(jwksUri).toURL()));
-            } catch (final URISyntaxException | MalformedURLException | IllegalArgumentException ignored) {
-                // Reported by onApplicationEvent
+            if ("true".equalsIgnoreCase(idTokenValidateSetting(plugin, providerId)) && validators.get(providerId) == null) {
+                throw new IllegalStateException(String.format(
+                        "openid.%1$s.%2$s=true, but openid.%1$s.%3$s and openid.%1$s.%4$s are not both set to valid values",
+                        providerId, ID_TOKEN_VALIDATE, ISSUER, JWKS_URI));
             }
         }
-        return validators;
     }
 
     private static boolean isIdTokenValidationDisabled(final OpenIdAuthPlugin plugin, final String providerId) {
-        return "false".equalsIgnoreCase(StringUtils.trim(plugin.getProperty(providerId, ID_TOKEN_VALIDATE)));
+        return "false".equalsIgnoreCase(idTokenValidateSetting(plugin, providerId));
+    }
+
+    private static String idTokenValidateSetting(final OpenIdAuthPlugin plugin, final String providerId) {
+        return StringUtils.trim(plugin.getProperty(providerId, ID_TOKEN_VALIDATE));
     }
 
     @Autowired
@@ -494,7 +491,7 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter
             signedIdToken = idToken;
         }
         final SignedJWT signedJWT = SignedJWT.parse(signedIdToken);
-        final JwtValidator validator = _idTokenValidators.get(providerId);
+        final JwtValidator validator = isIdTokenValidationDisabled(_plugin, providerId) ? null : _validators.get(providerId);
         final JWTClaimsSet claims = validator != null ? validator.validate(signedIdToken) : signedJWT.getJWTClaimsSet();
         return new TokenContext(claims, signedJWT.getHeader().toJSONObject());
     }

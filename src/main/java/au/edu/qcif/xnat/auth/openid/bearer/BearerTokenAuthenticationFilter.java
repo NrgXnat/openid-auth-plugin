@@ -12,11 +12,10 @@ import au.edu.qcif.xnat.auth.openid.gate.GateConfig;
 import au.edu.qcif.xnat.auth.openid.gate.TokenContext;
 import au.edu.qcif.xnat.auth.openid.jwt.JwtValidationException;
 import au.edu.qcif.xnat.auth.openid.jwt.JwtValidator;
+import au.edu.qcif.xnat.auth.openid.jwt.JwtValidatorRegistry;
 import au.edu.qcif.xnat.auth.openid.tokens.OpenIdAuthRequestToken;
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
-import java.net.URI;
-import java.net.URISyntaxException;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 import org.nrg.xdat.exceptions.UsernameAuthMappingNotFoundException;
@@ -42,9 +41,7 @@ import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.lang.reflect.Field;
-import java.net.MalformedURLException;
 import java.text.ParseException;
-import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.Executor;
@@ -53,15 +50,12 @@ import java.util.regex.Pattern;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
-import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.ISSUER;
-import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.JWKS_URI;
 import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.USERNAME_PATTERN;
 
 /**
  * Authenticates REST callers that present {@code Authorization: Bearer <jwt>}, where the JWT is an
- * access token minted by a configured OpenID provider. Unlike the interactive ID-token path, a
- * bearer token arrives from an untrusted client, so it is fully validated (signature, issuer,
- * expiry) before the request is trusted.
+ * access token minted by a configured OpenID provider. The token is fully validated (signature,
+ * issuer, expiry) before the request is trusted.
  *
  * <p>Flow ({@code doFilterInternal}):</p>
  * <ol>
@@ -160,7 +154,7 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
     private final OpenIdAuthPlugin _plugin;
     private final BearerTokenExtractor _extractor;
     private final BearerProviderResolver _providerResolver;
-    private final Map<String, JwtValidator> _validators;
+    private final JwtValidatorRegistry _validators;
     private final ClaimGateFactory _gateFactory;
     private final OpenIdUserResolver _userResolver;
     private final OpenIdAccountPolicy _accountPolicy;
@@ -177,13 +171,12 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
                                            final XdatUserAuthService userAuthService,
                                            final SiteConfigPreferences siteConfigPreferences,
                                            final AuthenticationEventPublisher eventPublisher,
+                                           final JwtValidatorRegistry validators,
                                            @Qualifier("asyncTaskExecutor") final Executor notifier) {
-        // Build the provider resolver once and derive the validators from it, so the eligible-provider
-        // config is scanned (and any fail-closed errors logged) a single time at startup.
         _plugin = plugin;
         _extractor = new BearerTokenExtractor();
         _providerResolver = new BearerProviderResolver(plugin);
-        _validators = buildValidators(_providerResolver, plugin);
+        _validators = validators;
         _gateFactory = new ClaimGateFactory(plugin);
         _userResolver = new OpenIdUserResolver(plugin, userAuthService, notifier);
         _accountPolicy = new OpenIdAccountPolicy(plugin, siteConfigPreferences);
@@ -212,7 +205,7 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
     BearerTokenAuthenticationFilter(final OpenIdAuthPlugin plugin,
                                     final BearerTokenExtractor extractor,
                                     final BearerProviderResolver providerResolver,
-                                    final Map<String, JwtValidator> validators,
+                                    final JwtValidatorRegistry validators,
                                     final ClaimGateFactory gateFactory,
                                     final OpenIdUserResolver userResolver,
                                     final OpenIdAccountPolicy accountPolicy,
@@ -225,23 +218,6 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
         _userResolver = userResolver;
         _accountPolicy = accountPolicy;
         _eventPublisher = eventPublisher;
-    }
-
-    /** Builds one cached validator per eligible provider; a malformed jwksUri excludes that provider. */
-    private static Map<String, JwtValidator> buildValidators(final BearerProviderResolver providerResolver,
-                                                             final OpenIdAuthPlugin plugin) {
-        final Map<String, JwtValidator> validators = new LinkedHashMap<>();
-        for (final String providerId : providerResolver.providerIds()) {
-            final String issuer = plugin.getProperty(providerId, ISSUER);
-            final String jwksUri = plugin.getProperty(providerId, JWKS_URI);
-            try {
-                validators.put(providerId, JwtValidator.forRemoteJwks(issuer, (new URI(jwksUri)).toURL()));
-            } catch (final MalformedURLException | URISyntaxException e) {
-                log.error("Provider '{}' has a malformed jwksUri '{}' — the bearer path is disabled for it.",
-                        providerId, jwksUri, e);
-            }
-        }
-        return validators;
     }
 
     /**

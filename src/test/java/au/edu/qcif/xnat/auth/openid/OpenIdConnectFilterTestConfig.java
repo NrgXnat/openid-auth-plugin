@@ -1,6 +1,7 @@
 package au.edu.qcif.xnat.auth.openid;
 
 import au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant;
+import au.edu.qcif.xnat.auth.openid.jwt.JwtValidatorRegistry;
 import au.edu.qcif.xnat.auth.openid.service.KeystoreService;
 import au.edu.qcif.xnat.auth.openid.service.KeystoreServiceImpl;
 import lombok.extern.slf4j.Slf4j;
@@ -151,6 +152,6 @@ public class OpenIdConnectFilterTestConfig {
                                                    final KeystoreService keystoreService,
                                                    final OpenIdAuthPlugin openIdAuthPlugin,
                                                    final AuthenticationEventPublisher authenticationEventPublisher) {
-        return new OpenIdConnectFilter(openIdAuthPlugin, authenticationEventPublisher, userAuthService(), siteConfigPreferences, keystoreService, Runnable::run);
+        return new OpenIdConnectFilter(openIdAuthPlugin, authenticationEventPublisher, userAuthService(), siteConfigPreferences, keystoreService, new JwtValidatorRegistry(openIdAuthPlugin), Runnable::run);
     }
 }

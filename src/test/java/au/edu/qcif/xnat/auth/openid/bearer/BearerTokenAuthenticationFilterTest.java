@@ -7,6 +7,7 @@ import au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant;
 import au.edu.qcif.xnat.auth.openid.gate.AuthPath;
 import au.edu.qcif.xnat.auth.openid.gate.ClaimGateFactory;
 import au.edu.qcif.xnat.auth.openid.jwt.JwtValidator;
+import au.edu.qcif.xnat.auth.openid.jwt.JwtValidatorRegistry;
 import au.edu.qcif.xnat.auth.openid.tokens.OpenIdAuthToken;
 import com.nimbusds.jose.JWSAlgorithm;
 import com.nimbusds.jose.JWSHeader;
@@ -105,8 +106,8 @@ public class BearerTokenAuthenticationFilterTest {
         // carrying it (see validClaims()) passes the gate, and the happy path exercises aud-on.
         lenient().when(plugin.getProperty(PROVIDER, "audCheck.acceptedAudiences")).thenReturn(AUDIENCE);
 
-        final Map<String, JwtValidator> validators =
-                Collections.singletonMap(PROVIDER, new JwtValidator(ISSUER, trustedSource));
+        final JwtValidatorRegistry validators = new JwtValidatorRegistry(
+                Collections.singletonMap(PROVIDER, new JwtValidator(ISSUER, trustedSource)));
 
         final OpenIdAccountPolicy accountPolicy = new OpenIdAccountPolicy(plugin, siteConfigPreferences);
         filter = new BearerTokenAuthenticationFilter(plugin, new BearerTokenExtractor(),
@@ -406,7 +407,7 @@ public class BearerTokenAuthenticationFilterTest {
         final OpenIdAccountPolicy accountPolicy = new OpenIdAccountPolicy(plugin, siteConfigPreferences);
         filter = new BearerTokenAuthenticationFilter(plugin, new BearerTokenExtractor(),
                 new BearerProviderResolver(plugin),
-                Collections.singletonMap(PROVIDER, new JwtValidator(ISSUER, trustedSource)),
+                new JwtValidatorRegistry(Collections.singletonMap(PROVIDER, new JwtValidator(ISSUER, trustedSource))),
                 new ClaimGateFactory(plugin), userResolver, accountPolicy, eventPublisher);
 
         bearer(sign(signingKey, validClaims().claim("email", "alice@gmail.com").build()));

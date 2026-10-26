@@ -146,7 +146,8 @@ at login is validated: its signature is verified against the provider's publishe
 A token that fails is refused and the user is returned to the login page. The token's `aud` is
 checked only by the audience gate (`idToken.audCheck.enabled`, below).
 
-If either property is missing, the ID token is not validated and a warning is logged at startup.
+If either property is missing or invalid, the ID token is not validated and a warning is logged at
+startup, unless `idToken.validate.enabled` is `true`, in which case XNAT fails to start.
 
 #### openid.`providerId`.issuer
 
@@ -162,7 +163,8 @@ set is cached and re-fetched on key rotation.
 
 Defaults to `true` when `issuer` and `jwksUri` are both set, otherwise `false`. Set it to `false` to
 skip ID-token validation and silence the startup warning, for example if the provider signs ID tokens
-with an algorithm other than `RS256`/`RS384`/`RS512`.
+with an algorithm other than `RS256`/`RS384`/`RS512`. Set it to `true` to require validation: XNAT
+then fails to start if `issuer` or `jwksUri` is missing or invalid.
 
 ### Claim-validation gates (audience, role, and type)
 
