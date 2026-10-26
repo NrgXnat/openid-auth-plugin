@@ -100,7 +100,7 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter
      * than an {@code HttpSession} attribute because the guard must survive the
      * {@code Login.vm -> /openid-login -> provider -> callback} redirect chain, across which the session does
      * not reliably persist (the Turbine login page and the Spring filter can observe different sessions).
-     * Cleared here on a successful interactive login, so a later visit to the login page is not held back by it.
+     * Cleared here on a successful login, so a later visit to the login page is not held back by it.
      */
     public static final String AUTO_LOGIN_ATTEMPTED_COOKIE = "OPENID_AUTOLOGIN_TRIED";
 
@@ -246,10 +246,11 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter
         HttpSession session = request.getSession(false);
         if (session != null) {
             String requestProviderId = request.getParameter("providerId");
-            String sessionProviderId = (String) request.getSession().getAttribute("providerId");
-            if (requestProviderId != null && !requestProviderId.equals(sessionProviderId)) {
-                log.debug("Found a session that had previously stopped during the OAuth/OIDC authentication process. Deleting the session.");
-                request.getSession().invalidate();
+            String sessionProviderId = (String) session.getAttribute("providerId");
+            // A session with no providerId never started the flow, so it holds no OAuth state to discard.
+            if (requestProviderId != null && sessionProviderId != null && !requestProviderId.equals(sessionProviderId)) {
+                log.debug("Found a session that had previously stopped during the OAuth/OIDC authentication process with provider '{}'. Deleting the session.", sessionProviderId);
+                session.invalidate();
             }
         }
 

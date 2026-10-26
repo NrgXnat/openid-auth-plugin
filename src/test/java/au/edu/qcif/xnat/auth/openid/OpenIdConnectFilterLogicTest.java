@@ -9,11 +9,18 @@ import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnitRunner;
 import org.nrg.xdat.preferences.SiteConfigPreferences;
 import org.nrg.xdat.services.XdatUserAuthService;
+import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.mock.web.MockHttpServletResponse;
+import org.springframework.mock.web.MockHttpSession;
 import org.springframework.security.authentication.AuthenticationEventPublisher;
 import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.authentication.CredentialsExpiredException;
 import org.springframework.security.core.AuthenticationException;
+import org.springframework.security.oauth2.client.OAuth2RestTemplate;
+import org.springframework.security.oauth2.client.resource.UserRedirectRequiredException;
 import org.springframework.security.web.authentication.AuthenticationSuccessHandler;
+import org.springframework.security.web.savedrequest.HttpSessionRequestCache;
+import org.springframework.security.web.savedrequest.SavedRequest;
 
 import javax.servlet.http.Cookie;
 import javax.servlet.http.HttpServletRequest;
@@ -35,16 +42,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * Unit tests for the pure decision logic in {@link OpenIdConnectFilter}: the login-page
- * error-message mapping and ID-token encryption detection. (Email-domain whitelisting and the
- * email-verification requirement now live in {@link OpenIdAccountPolicy} and are tested in
- * {@code OpenIdAccountPolicyTest}.)
- *
- * <p>These paths need no OAuth2 exchange, database, or servlet container. The filter is constructed
- * directly with mocked collaborators (only {@link OpenIdAuthPlugin} drives these branches), and the
- * package-private/private methods are exercised via reflection — the same approach used for the PKCE
- * provider's parameter builder. The static-XNAT-dependent paths (user creation, redirects) are
- * deliberately left to integration testing.</p>
+ * Unit tests for {@link OpenIdConnectFilter} branches that need no token exchange, database, or servlet container.
  */
 @RunWith(MockitoJUnitRunner.class)
 public class OpenIdConnectFilterLogicTest {
@@ -175,8 +173,6 @@ public class OpenIdConnectFilterLogicTest {
         final HttpSession session = mock(HttpSession.class);
         when(request.getParameter("providerId")).thenReturn(null);
         when(request.getSession(false)).thenReturn(session);
-        // The surrounding stale-session check reads through getSession(), not the handle it just took.
-        lenient().when(request.getSession()).thenReturn(session);
         when(session.getAttribute("providerId")).thenReturn(null);
 
         filter.attemptAuthentication(request, response);
@@ -210,5 +206,53 @@ public class OpenIdConnectFilterLogicTest {
         OpenIdConnectFilter.clearAutoLoginCookies(request, response);
 
         verify(response, never()).addCookie(any());
+    }
+
+    // ---- pre-login session when starting a login -----------------------------------------------
+
+    @Test
+    public void keepsTheSessionWhenStartingALogin() throws Exception {
+        final MockHttpSession original = sessionWithRequestedPage();
+        original.setAttribute("par", "invitation");
+
+        final MockHttpServletRequest request = startLogin(original);
+
+        assertFalse(original.isInvalid());
+        assertEquals("http://localhost" + REQUESTED_PAGE, savedRequestIn(request).getRedirectUrl());
+        assertEquals("invitation", request.getSession().getAttribute("par"));
+    }
+
+    private static final String REQUESTED_PAGE = "/app/template/XDATScreen_add_xnat_projectData.vm";
+
+    /** A session holding what Spring saves before sending an anonymous visitor to the login page. */
+    private static MockHttpSession sessionWithRequestedPage() {
+        final MockHttpSession session = new MockHttpSession();
+        final MockHttpServletRequest deepLink = new MockHttpServletRequest("GET", REQUESTED_PAGE);
+        deepLink.setSession(session);
+        new HttpSessionRequestCache().saveRequest(deepLink, new MockHttpServletResponse());
+        return session;
+    }
+
+    /** Requests {@code /openid-login?providerId=PROVIDER} in the given session, up to the redirect to the provider. */
+    private MockHttpServletRequest startLogin(final MockHttpSession session) throws Exception {
+        final OpenIdConnectFilter filter = filterWith(Collections.emptyMap());
+        final OAuth2RestTemplate restTemplate = mock(OAuth2RestTemplate.class);
+        when(restTemplate.getAccessToken()).thenThrow(new UserRedirectRequiredException("https://idp.example/auth", Collections.emptyMap()));
+        filter.setOAuth2RestTemplate(restTemplate);
+
+        final MockHttpServletRequest request = new MockHttpServletRequest("GET", "/openid-login");
+        request.setParameter("providerId", PROVIDER);
+        request.setSession(session);
+        try {
+            filter.attemptAuthentication(request, new MockHttpServletResponse());
+            fail("expected a redirect to the provider");
+        } catch (final UserRedirectRequiredException expected) {
+            // the outbound leg of the login ends here
+        }
+        return request;
+    }
+
+    private static SavedRequest savedRequestIn(final MockHttpServletRequest request) {
+        return new HttpSessionRequestCache().getRequest(request, new MockHttpServletResponse());
     }
 }
