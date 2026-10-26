@@ -5,12 +5,15 @@ import au.edu.qcif.xnat.auth.openid.gate.ClaimGate;
 import au.edu.qcif.xnat.auth.openid.gate.ClaimGateException;
 import au.edu.qcif.xnat.auth.openid.gate.ClaimGateFactory;
 import au.edu.qcif.xnat.auth.openid.gate.TokenContext;
+import au.edu.qcif.xnat.auth.openid.jwt.JwtValidationException;
+import au.edu.qcif.xnat.auth.openid.jwt.JwtValidator;
 import au.edu.qcif.xnat.auth.openid.service.KeystoreService;
 import au.edu.qcif.xnat.auth.openid.tokens.OpenIdAuthRequestToken;
 import au.edu.qcif.xnat.auth.openid.tokens.OpenIdAuthToken;
 import com.nimbusds.jose.JOSEException;
 import com.nimbusds.jose.crypto.RSADecrypter;
 import com.nimbusds.jwt.EncryptedJWT;
+import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.collections.MapUtils;
@@ -26,6 +29,8 @@ import org.nrg.xdat.turbine.utils.TurbineUtils;
 import org.nrg.xft.security.UserI;
 import org.nrg.xnat.security.exceptions.NewAutoAccountNotAutoEnabledException;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.ApplicationListener;
+import org.springframework.context.event.ContextRefreshedEvent;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
@@ -52,17 +57,25 @@ import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import javax.servlet.http.HttpSession;
 import java.io.IOException;
+import java.net.MalformedURLException;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.text.ParseException;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 import au.edu.qcif.xnat.auth.openid.utils.OpenIdUtils;
 import org.nrg.xdat.XDAT;
 import org.springframework.beans.factory.annotation.Qualifier;
 import java.util.Optional;
 import java.util.concurrent.Executor;
+import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.ID_TOKEN_VALIDATE;
+import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.ISSUER;
+import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.JWKS_URI;
 import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.LOGOUT_URI;
 import org.nrg.xnat.security.OnXnatLogin;
 
@@ -75,7 +88,8 @@ import org.nrg.xnat.security.OnXnatLogin;
 @EnableOAuth2Client
 @Slf4j
 @Component
-public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter {
+public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter
+        implements ApplicationListener<ContextRefreshedEvent> {
 
     /**
      * Session attribute key for storing OpenID error messages to display on the login page.
@@ -113,6 +127,8 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
     private final ClaimGateFactory _gateFactory;
     private final OpenIdUserResolver _userResolver;
     private final OpenIdAccountPolicy _accountPolicy;
+    private final Map<String, JwtValidator> _idTokenValidators;
+    private final AtomicBoolean _configReported = new AtomicBoolean();
 
     private OAuth2RestTemplate _restTemplate;
 
@@ -139,6 +155,7 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         _gateFactory = new ClaimGateFactory(plugin);
         _userResolver = new OpenIdUserResolver(plugin, userAuthService, notifier);
         _accountPolicy = new OpenIdAccountPolicy(plugin, siteConfigPreferences);
+        _idTokenValidators = buildIdTokenValidators(plugin);
     }
 
     /** Test seam: inject the user resolver so the missing-mapping branches can be driven directly. */
@@ -155,6 +172,43 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         _gateFactory = new ClaimGateFactory(plugin);
         _userResolver = userResolver;
         _accountPolicy = new OpenIdAccountPolicy(plugin, siteConfigPreferences);
+        _idTokenValidators = buildIdTokenValidators(plugin);
+    }
+
+    // Reported here rather than from the constructor, which runs before the plugin's logging is configured.
+    @Override
+    public void onApplicationEvent(final ContextRefreshedEvent event) {
+        if (!_configReported.compareAndSet(false, true)) {
+            return;
+        }
+        for (final String providerId : _plugin.getEnabledProviders()) {
+            if (!_idTokenValidators.containsKey(providerId) && !isIdTokenValidationDisabled(_plugin, providerId)) {
+                log.warn("ID tokens from provider '{}' are not validated: openid.{}.{} and openid.{}.{} must both be "
+                                + "set to valid values. Set openid.{}.{}=false to silence this warning.",
+                        providerId, providerId, ISSUER, providerId, JWKS_URI, providerId, ID_TOKEN_VALIDATE);
+            }
+        }
+    }
+
+    private static Map<String, JwtValidator> buildIdTokenValidators(final OpenIdAuthPlugin plugin) {
+        final Map<String, JwtValidator> validators = new HashMap<>();
+        for (final String providerId : plugin.getEnabledProviders()) {
+            final String issuer = StringUtils.trimToNull(plugin.getProperty(providerId, ISSUER));
+            final String jwksUri = StringUtils.trimToNull(plugin.getProperty(providerId, JWKS_URI));
+            if (isIdTokenValidationDisabled(plugin, providerId) || issuer == null || jwksUri == null) {
+                continue;
+            }
+            try {
+                validators.put(providerId, JwtValidator.forRemoteJwks(issuer, new URI(jwksUri).toURL()));
+            } catch (final URISyntaxException | MalformedURLException | IllegalArgumentException ignored) {
+                // Reported by onApplicationEvent
+            }
+        }
+        return validators;
+    }
+
+    private static boolean isIdTokenValidationDisabled(final OpenIdAuthPlugin plugin, final String providerId) {
+        return "false".equalsIgnoreCase(StringUtils.trim(plugin.getProperty(providerId, ID_TOKEN_VALIDATE)));
     }
 
     @Autowired
@@ -248,6 +302,9 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         } catch (NotFoundException e) {
             log.error("Provider id {} not configured", providerId, e);
             throw new BadCredentialsException("Provider not configured", e);
+        } catch (JwtValidationException e) {
+            log.warn("ID token from provider '{}' failed validation: {}", providerId, e.getMessage());
+            throw new BadCredentialsException("ID token failed validation", e);
         }
 
         applyIdTokenClaimGates(providerId, tokenContext);
@@ -335,7 +392,7 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
      * Exception types thrown by attemptAuthentication:
      * - NewAutoAccountNotAutoEnabledException: user not enabled, email domain not whitelisted, or provider disabled
      * - CredentialsExpiredException: account locked (unverified users are redirected directly in attemptAuthentication)
-     * - BadCredentialsException: failed to get access token, parse ID token, or invalid username pattern
+     * - BadCredentialsException: failed to get access token, parse or validate ID token, or invalid username pattern
      * - AuthenticationServiceException: failed to create user account
      */
     @Override
@@ -424,20 +481,22 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
         }
     }
 
-    private TokenContext parseIdToken(final String idToken, final String providerId)
-            throws JOSEException, ParseException, NotFoundException {
-        final SignedJWT signedJWT;
+    TokenContext parseIdToken(final String idToken, final String providerId)
+            throws JOSEException, ParseException, NotFoundException, JwtValidationException {
+        final String signedIdToken;
         if (isIdTokenEncrypted(idToken)) {
             final EncryptedJWT encryptedJWT = EncryptedJWT.parse(idToken);
             encryptedJWT.decrypt(new RSADecrypter(_keystoreService.getEncryptionPrivateKey(providerId)));
 
             // The decrypted payload is the inner signed JWT, whose header carries the meaningful typ.
-            final String decryptedPayload = encryptedJWT.getPayload().toString();
-            signedJWT = SignedJWT.parse(decryptedPayload);
+            signedIdToken = encryptedJWT.getPayload().toString();
         } else {
-            signedJWT = SignedJWT.parse(idToken);
+            signedIdToken = idToken;
         }
-        return new TokenContext(signedJWT.getJWTClaimsSet(), signedJWT.getHeader().toJSONObject());
+        final SignedJWT signedJWT = SignedJWT.parse(signedIdToken);
+        final JwtValidator validator = _idTokenValidators.get(providerId);
+        final JWTClaimsSet claims = validator != null ? validator.validate(signedIdToken) : signedJWT.getJWTClaimsSet();
+        return new TokenContext(claims, signedJWT.getHeader().toJSONObject());
     }
 
     /**
@@ -484,11 +543,8 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter 
     }
 
     /**
-     * Runs the claim-validation gates enabled for the interactive ID-token path against the parsed
-     * token claims. A gate failure means the credential is valid but the caller is not authorized;
-     * on this path the status code is invisible (the outcome is a login redirect), so it is mapped
-     * to {@link BadCredentialsException}, reusing the existing validation-failure handling. With no
-     * gates enabled this is a no-op.
+     * Unlike the bearer path, a gate failure is not distinguished from an invalid token here: either way
+     * the user is sent back to the login page.
      */
     void applyIdTokenClaimGates(final String providerId, final TokenContext token) {
         try {

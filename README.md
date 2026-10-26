@@ -138,6 +138,32 @@ Comma delimted whitelist of domains.
 
 Allows skipping of user creation, usually set to true.
 
+### ID-token validation
+
+When `openid.providerId.issuer` and `openid.providerId.jwksUri` are both set, the ID token received
+at login is validated: its signature is verified against the provider's published keys (only
+`RS256`/`RS384`/`RS512` are accepted), its `iss` must equal `issuer`, and it must not have expired.
+A token that fails is refused and the user is returned to the login page. The token's `aud` is
+checked only by the audience gate (`idToken.audCheck.enabled`, below).
+
+If either property is missing, the ID token is not validated and a warning is logged at startup.
+
+#### openid.`providerId`.issuer
+
+The exact `iss` value expected in tokens from this provider. On the bearer path it also selects the
+provider for an inbound token.
+
+#### openid.`providerId`.jwksUri
+
+The provider's JWKS (JSON Web Key Set) endpoint, whose public keys verify token signatures. The key
+set is cached and re-fetched on key rotation.
+
+#### openid.`providerId`.idToken.validate.enabled
+
+Defaults to `true` when `issuer` and `jwksUri` are both set, otherwise `false`. Set it to `false` to
+skip ID-token validation and silence the startup warning, for example if the provider signs ID tokens
+with an algorithm other than `RS256`/`RS384`/`RS512`.
+
 ### Claim-validation gates (audience, role, and type)
 
 Three optional gates can reject a valid token whose claims do not meet an authorization
@@ -218,10 +244,8 @@ on every request but is a strict no-op unless an `Authorization: Bearer` header 
 short-circuits when the request is already authenticated (e.g. a session cookie). A bearer-
 authenticated request is **stateless** — no XNAT session (`JSESSIONID`) is created for it.
 
-Because a bearer token arrives from an untrusted client (unlike the interactive ID token, which
-XNAT receives directly from the token endpoint), it is fully validated: the RSA signature is
-verified against the provider's published keys, and the `iss` and `exp` claims are checked. Only
-the `RS256`/`RS384`/`RS512` algorithms are accepted.
+A bearer token is always validated the same way as an ID token (see
+[ID-token validation](#id-token-validation)): signature, `iss` and `exp`.
 
 Once the token is validated, a bearer caller is held to the **same account policy as an interactive
 login** for that provider: the per-provider email-domain whitelist
@@ -255,16 +279,6 @@ identity (both derive `auth_user` from the same `usernamePattern`).
 Master switch for the bearer-token path for this provider. Default `false`. When `true`, both
 `openid.providerId.issuer` and `openid.providerId.jwksUri` must also be configured (a provider
 missing either is excluded from the bearer path and logged at error level — fail-closed).
-
-#### openid.`providerId`.issuer
-
-The exact `iss` value expected in bearer tokens from this provider. Also used to route an inbound
-token to the right provider. Required when `bearer.enabled` is `true`.
-
-#### openid.`providerId`.jwksUri
-
-The provider's JWKS (JSON Web Key Set) endpoint. Its public keys verify the bearer token signature;
-the key set is cached and re-fetched on key rotation. Required when `bearer.enabled` is `true`.
 
 #### openid.`providerId`.bearer.forceUserCreate
 

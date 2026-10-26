@@ -1,4 +1,4 @@
-package au.edu.qcif.xnat.auth.openid.bearer;
+package au.edu.qcif.xnat.auth.openid.jwt;
 
 import com.nimbusds.jose.JWSAlgorithm;
 import com.nimbusds.jose.JWSHeader;
@@ -20,16 +20,7 @@ import java.util.Date;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.fail;
 
-/**
- * Unit tests for {@link BearerTokenValidator}. A bearer access token arrives from an untrusted REST
- * client, so the validator must verify the signature against the issuer's keys and reject any token
- * with the wrong issuer, an expired/absent expiry, a bad signature, or an unsecured ({@code alg=none})
- * header.
- *
- * <p>Fully offline: a test RSA keypair signs the tokens and the validator is given the matching
- * public key via an in-memory {@link ImmutableJWKSet}, so no network or live IdP is involved.</p>
- */
-public class BearerTokenValidatorTest {
+public class JwtValidatorTest {
 
     private static final String ISSUER = "https://idp.example/realms/xnat";
 
@@ -44,8 +35,8 @@ public class BearerTokenValidatorTest {
         trustedSource = new ImmutableJWKSet<>(new JWKSet(signingKey.toPublicJWK()));
     }
 
-    private static BearerTokenValidator validator() {
-        return new BearerTokenValidator(ISSUER, trustedSource);
+    private static JwtValidator validator() {
+        return new JwtValidator(ISSUER, trustedSource);
     }
 
     private static String signedToken(final RSAKey key, final JWTClaimsSet claims) throws Exception {
@@ -65,8 +56,8 @@ public class BearerTokenValidatorTest {
     private static void assertRejected(final String token) {
         try {
             validator().validate(token);
-            fail("expected BearerTokenValidationException");
-        } catch (BearerTokenValidationException expected) {
+            fail("expected JwtValidationException");
+        } catch (JwtValidationException expected) {
             // pass
         }
     }

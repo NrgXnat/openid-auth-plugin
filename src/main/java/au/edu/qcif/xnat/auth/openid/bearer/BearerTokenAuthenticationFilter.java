@@ -10,6 +10,8 @@ import au.edu.qcif.xnat.auth.openid.gate.ClaimGateException;
 import au.edu.qcif.xnat.auth.openid.gate.ClaimGateFactory;
 import au.edu.qcif.xnat.auth.openid.gate.GateConfig;
 import au.edu.qcif.xnat.auth.openid.gate.TokenContext;
+import au.edu.qcif.xnat.auth.openid.jwt.JwtValidationException;
+import au.edu.qcif.xnat.auth.openid.jwt.JwtValidator;
 import au.edu.qcif.xnat.auth.openid.tokens.OpenIdAuthRequestToken;
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
@@ -158,7 +160,7 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
     private final OpenIdAuthPlugin _plugin;
     private final BearerTokenExtractor _extractor;
     private final BearerProviderResolver _providerResolver;
-    private final Map<String, BearerTokenValidator> _validators;
+    private final Map<String, JwtValidator> _validators;
     private final ClaimGateFactory _gateFactory;
     private final OpenIdUserResolver _userResolver;
     private final OpenIdAccountPolicy _accountPolicy;
@@ -210,7 +212,7 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
     BearerTokenAuthenticationFilter(final OpenIdAuthPlugin plugin,
                                     final BearerTokenExtractor extractor,
                                     final BearerProviderResolver providerResolver,
-                                    final Map<String, BearerTokenValidator> validators,
+                                    final Map<String, JwtValidator> validators,
                                     final ClaimGateFactory gateFactory,
                                     final OpenIdUserResolver userResolver,
                                     final OpenIdAccountPolicy accountPolicy,
@@ -226,14 +228,14 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
     }
 
     /** Builds one cached validator per eligible provider; a malformed jwksUri excludes that provider. */
-    private static Map<String, BearerTokenValidator> buildValidators(final BearerProviderResolver providerResolver,
-                                                                     final OpenIdAuthPlugin plugin) {
-        final Map<String, BearerTokenValidator> validators = new LinkedHashMap<>();
+    private static Map<String, JwtValidator> buildValidators(final BearerProviderResolver providerResolver,
+                                                             final OpenIdAuthPlugin plugin) {
+        final Map<String, JwtValidator> validators = new LinkedHashMap<>();
         for (final String providerId : providerResolver.providerIds()) {
             final String issuer = plugin.getProperty(providerId, ISSUER);
             final String jwksUri = plugin.getProperty(providerId, JWKS_URI);
             try {
-                validators.put(providerId, BearerTokenValidator.forRemoteJwks(issuer, (new URI(jwksUri)).toURL()));
+                validators.put(providerId, JwtValidator.forRemoteJwks(issuer, (new URI(jwksUri)).toURL()));
             } catch (final MalformedURLException | URISyntaxException e) {
                 log.error("Provider '{}' has a malformed jwksUri '{}' — the bearer path is disabled for it.",
                         providerId, jwksUri, e);
@@ -403,7 +405,7 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
         }
         final String providerId = maybeProvider.get();
 
-        final BearerTokenValidator validator = _validators.get(providerId);
+        final JwtValidator validator = _validators.get(providerId);
         if (validator == null) {
             // Provider routed but no validator built (e.g. malformed jwksUri at startup) — fail closed.
             log.warn("No bearer token validator configured for provider '{}'", providerId);
@@ -414,7 +416,7 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
         final JWTClaimsSet claims;
         try {
             claims = validator.validate(rawJwt);
-        } catch (final BearerTokenValidationException e) {
+        } catch (final JwtValidationException e) {
             log.info("Bearer token for provider '{}' failed validation: {}", providerId, e.getMessage());
             unauthorized(response, "invalid bearer token");
             return;
