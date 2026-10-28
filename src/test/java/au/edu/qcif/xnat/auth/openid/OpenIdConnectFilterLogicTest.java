@@ -222,6 +222,16 @@ public class OpenIdConnectFilterLogicTest {
         assertEquals("invitation", request.getSession().getAttribute("par"));
     }
 
+    @Test
+    public void discardsASessionLeftOverFromAnotherProvidersLogin() throws Exception {
+        final MockHttpSession original = sessionWithRequestedPage();
+        original.setAttribute("providerId", "other");
+
+        startLogin(original);
+
+        assertTrue(original.isInvalid());
+    }
+
     private static final String REQUESTED_PAGE = "/app/template/XDATScreen_add_xnat_projectData.vm";
 
     /** A session holding what Spring saves before sending an anonymous visitor to the login page. */
