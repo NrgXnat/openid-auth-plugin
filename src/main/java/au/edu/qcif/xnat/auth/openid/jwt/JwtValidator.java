@@ -1,8 +1,10 @@
 package au.edu.qcif.xnat.auth.openid.jwt;
 
 import com.nimbusds.jose.JOSEException;
+import com.nimbusds.jose.JOSEObjectType;
 import com.nimbusds.jose.JWSAlgorithm;
 import com.nimbusds.jose.proc.BadJOSEException;
+import com.nimbusds.jose.proc.DefaultJOSEObjectTypeVerifier;
 import com.nimbusds.jose.proc.JWSVerificationKeySelector;
 import com.nimbusds.jose.proc.SecurityContext;
 import com.nimbusds.jose.jwk.source.JWKSource;
@@ -20,13 +22,14 @@ import java.net.URL;
 import java.text.ParseException;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Verifies a JWT's signature, issuer and expiry. Only RS256/384/512 are accepted, which rules out
- * {@code alg=none} and HMAC algorithm confusion. Audience is left to the {@code AudienceGate}.
+ * Verifies a JWT's signature, issuer, expiry and header {@code typ}. Only RS256/384/512 are accepted, which
+ * rules out {@code alg=none} and HMAC algorithm confusion. Audience is left to the {@code AudienceGate}.
  */
 @Slf4j
 public class JwtValidator {
@@ -42,15 +45,26 @@ public class JwtValidator {
     private static final int JWKS_CONNECT_TIMEOUT_MS = 2_000;
     private static final int JWKS_READ_TIMEOUT_MS = 4_000;
 
+    // null accepts a token with no header typ
+    public static final Set<JOSEObjectType> ID_TOKEN_TYPES = types(JOSEObjectType.JWT, null);
+    public static final Set<JOSEObjectType> ACCESS_TOKEN_TYPES = types(JOSEObjectType.JWT, null,
+            new JOSEObjectType("at+jwt"), new JOSEObjectType("application/at+jwt"));
+
     private final DefaultJWTProcessor<SecurityContext> processor;
 
-    public JwtValidator(final String expectedIssuer, final JWKSource<SecurityContext> jwkSource) {
+    public JwtValidator(final String expectedIssuer, final JWKSource<SecurityContext> jwkSource,
+                        final Set<JOSEObjectType> acceptedTypes) {
         final DefaultJWTProcessor<SecurityContext> processor = new DefaultJWTProcessor<>();
         processor.setJWSKeySelector(new JWSVerificationKeySelector<>(ACCEPTED_ALGORITHMS, jwkSource));
+        processor.setJWSTypeVerifier(new DefaultJOSEObjectTypeVerifier<>(acceptedTypes));
         processor.setJWTClaimsSetVerifier(new DefaultJWTClaimsVerifier<>(
                 new JWTClaimsSet.Builder().issuer(expectedIssuer).build(),
                 Collections.singleton("exp")));
         this.processor = processor;
+    }
+
+    private static Set<JOSEObjectType> types(final JOSEObjectType... types) {
+        return Collections.unmodifiableSet(new HashSet<>(Arrays.asList(types)));
     }
 
     public static JWKSource<SecurityContext> remoteJwks(final URL jwksUri) {

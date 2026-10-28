@@ -259,7 +259,8 @@ short-circuits when the request is already authenticated (e.g. a session cookie)
 authenticated request is **stateless** — no XNAT session (`JSESSIONID`) is created for it.
 
 A bearer token is always validated the same way as an ID token (see
-[ID-token validation](#id-token-validation)): signature, `iss` and `exp`.
+[ID-token validation](#id-token-validation)): signature, `iss` and `exp`. Its header `typ`, if any,
+must be `JWT` or `at+jwt`.
 
 Once the token is validated, a bearer caller is held to the **same account policy as an interactive
 login** for that provider: the per-provider email-domain whitelist

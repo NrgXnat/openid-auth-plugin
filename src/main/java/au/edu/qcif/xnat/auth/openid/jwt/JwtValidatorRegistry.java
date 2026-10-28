@@ -48,9 +48,9 @@ public class JwtValidatorRegistry {
                         providerId, jwksUri, e);
                 continue;
             }
-            idTokenValidators.put(providerId, new JwtValidator(idTokenIssuer, keys));
+            idTokenValidators.put(providerId, new JwtValidator(idTokenIssuer, keys, JwtValidator.ID_TOKEN_TYPES));
             if (issuer != null) {
-                bearerValidators.put(providerId, new JwtValidator(issuer, keys));
+                bearerValidators.put(providerId, new JwtValidator(issuer, keys, JwtValidator.ACCESS_TOKEN_TYPES));
             }
         }
     }

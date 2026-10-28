@@ -3,11 +3,13 @@ package au.edu.qcif.xnat.auth.openid.gate;
 import org.apache.commons.lang3.StringUtils;
 
 import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * Passes when the token's {@code typ} is one of the configured expected types (a case-sensitive
- * any-of membership test). Its purpose is to distinguish token kinds — e.g. an access token from an
- * id token — so a token of the wrong kind cannot be replayed against a path that expects the other.
+ * any-of membership test in which, as in RFC 7515, an {@code application/} prefix is optional). Its
+ * purpose is to distinguish token kinds — e.g. an access token from an id token — so a token of the
+ * wrong kind cannot be replayed against a path that expects the other.
  *
  * <p>{@code typ} is read from the token <strong>body</strong> claim first, falling back to the JWT
  * <strong>header</strong> when the body has none. This accommodates providers that place it in
@@ -20,7 +22,7 @@ final class TypeGate implements ClaimGate {
     private final Set<String> expectedTypes;
 
     TypeGate(final Set<String> expectedTypes) {
-        this.expectedTypes = expectedTypes;
+        this.expectedTypes = expectedTypes.stream().map(TypeGate::withoutApplicationPrefix).collect(Collectors.toSet());
     }
 
     @Override
@@ -31,9 +33,14 @@ final class TypeGate implements ClaimGate {
             final Object headerTyp = token.headers().get("typ");
             typ = headerTyp != null ? headerTyp.toString() : null;
         }
-        if (typ == null || !expectedTypes.contains(typ)) {
+        if (typ == null || !expectedTypes.contains(withoutApplicationPrefix(typ))) {
             throw new ClaimGateException(
                     "Token typ '" + typ + "' is not one of the accepted types " + expectedTypes);
         }
+    }
+
+    private static String withoutApplicationPrefix(final String typ) {
+        final String subtype = StringUtils.removeStart(typ, "application/");
+        return subtype.contains("/") ? typ : subtype;
     }
 }
