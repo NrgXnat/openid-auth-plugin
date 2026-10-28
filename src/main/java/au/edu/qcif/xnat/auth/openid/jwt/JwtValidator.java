@@ -38,8 +38,8 @@ public class JwtValidator {
         this.processor = processor;
     }
 
-    public static JwtValidator forRemoteJwks(final String expectedIssuer, final URL jwksUri) {
-        return new JwtValidator(expectedIssuer, JWKSourceBuilder.create(jwksUri).build());
+    public static JWKSource<SecurityContext> remoteJwks(final URL jwksUri) {
+        return JWKSourceBuilder.create(jwksUri).build();
     }
 
     public JWTClaimsSet validate(final String rawJwt) throws JwtValidationException {

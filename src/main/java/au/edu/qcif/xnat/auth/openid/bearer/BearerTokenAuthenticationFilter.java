@@ -381,7 +381,7 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
         }
         final String providerId = maybeProvider.get();
 
-        final JwtValidator validator = _validators.get(providerId);
+        final JwtValidator validator = _validators.get(providerId, AuthPath.BEARER);
         if (validator == null) {
             // Provider routed but no validator built (e.g. malformed jwksUri at startup) — fail closed.
             log.warn("No bearer token validator configured for provider '{}'", providerId);

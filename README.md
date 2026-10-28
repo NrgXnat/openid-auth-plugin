@@ -142,7 +142,8 @@ Allows skipping of user creation, usually set to true.
 
 When `openid.providerId.issuer` and `openid.providerId.jwksUri` are both set, the ID token received
 at login is validated: its signature is verified against the provider's published keys (only
-`RS256`/`RS384`/`RS512` are accepted), its `iss` must equal `issuer`, and it must not have expired.
+`RS256`/`RS384`/`RS512` are accepted), its `iss` must equal `issuer` (or `idToken.issuer`, if set),
+and it must not have expired.
 A token that fails is refused and the user is returned to the login page. The token's `aud` is
 checked only by the audience gate (`idToken.audCheck.enabled`, below).
 
@@ -153,6 +154,14 @@ startup, unless `idToken.validate.enabled` is `true`, in which case XNAT fails t
 
 The exact `iss` value expected in tokens from this provider. On the bearer path it also selects the
 provider for an inbound token.
+
+#### openid.`providerId`.idToken.issuer
+
+The `iss` expected in ID tokens, for a provider whose ID tokens and access tokens carry different
+issuers. Defaults to `issuer`. Microsoft Entra is one: unless the API's app registration sets
+`requestedAccessTokenVersion` to `2`, its access tokens carry `https://sts.windows.net/{tenant}/`
+while ID tokens from the v2.0 endpoint carry `https://login.microsoftonline.com/{tenant}/v2.0`. Set
+`issuer` to the first and `idToken.issuer` to the second.
 
 #### openid.`providerId`.jwksUri
 

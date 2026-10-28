@@ -181,7 +181,7 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter
             return;
         }
         for (final String providerId : _plugin.getEnabledProviders()) {
-            if (_validators.get(providerId) == null && !isIdTokenValidationDisabled(_plugin, providerId)) {
+            if (_validators.get(providerId, AuthPath.ID_TOKEN) == null && !isIdTokenValidationDisabled(_plugin, providerId)) {
                 log.warn("ID tokens from provider '{}' are not validated: openid.{}.{} and openid.{}.{} must both be "
                                 + "set to valid values. Set openid.{}.{}=false to silence this warning.",
                         providerId, providerId, ISSUER, providerId, JWKS_URI, providerId, ID_TOKEN_VALIDATE);
@@ -192,7 +192,7 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter
     private static void requireConfiguredIdTokenValidation(final OpenIdAuthPlugin plugin,
                                                            final JwtValidatorRegistry validators) {
         for (final String providerId : plugin.getEnabledProviders()) {
-            if ("true".equalsIgnoreCase(idTokenValidateSetting(plugin, providerId)) && validators.get(providerId) == null) {
+            if ("true".equalsIgnoreCase(idTokenValidateSetting(plugin, providerId)) && validators.get(providerId, AuthPath.ID_TOKEN) == null) {
                 throw new IllegalStateException(String.format(
                         "openid.%1$s.%2$s=true, but openid.%1$s.%3$s and openid.%1$s.%4$s are not both set to valid values",
                         providerId, ID_TOKEN_VALIDATE, ISSUER, JWKS_URI));
@@ -491,7 +491,7 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter
             signedIdToken = idToken;
         }
         final SignedJWT signedJWT = SignedJWT.parse(signedIdToken);
-        final JwtValidator validator = isIdTokenValidationDisabled(_plugin, providerId) ? null : _validators.get(providerId);
+        final JwtValidator validator = isIdTokenValidationDisabled(_plugin, providerId) ? null : _validators.get(providerId, AuthPath.ID_TOKEN);
         final JWTClaimsSet claims = validator != null ? validator.validate(signedIdToken) : signedJWT.getJWTClaimsSet();
         return new TokenContext(claims, signedJWT.getHeader().toJSONObject());
     }

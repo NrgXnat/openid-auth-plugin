@@ -24,7 +24,7 @@ import static com.github.tomakehurst.wiremock.core.WireMockConfiguration.options
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.fail;
 
-/** Exercises {@link JwtValidator#forRemoteJwks} against a JWKS endpoint served by WireMock. */
+/** Exercises {@link JwtValidator#remoteJwks} against a JWKS endpoint served by WireMock. */
 public class JwtValidatorJwksIntegrationTest {
 
     private static final String ISSUER = "https://idp.example/realms/xnat";
@@ -46,7 +46,7 @@ public class JwtValidatorJwksIntegrationTest {
                 .withStatus(200)
                 .withHeader("Content-Type", "application/json")
                 .withBody(new JWKSet(publishedKey.toPublicJWK()).toString())));
-        return JwtValidator.forRemoteJwks(ISSUER, new URL("http://localhost:" + wireMock.port() + "/jwks"));
+        return new JwtValidator(ISSUER, JwtValidator.remoteJwks(new URL("http://localhost:" + wireMock.port() + "/jwks")));
     }
 
     private static String sign(final RSAKey key) throws Exception {

@@ -17,4 +17,5 @@ public class OpenIdAuthConstant {
     public static final String AUTO_LOGIN = "autoLogin";
     public static final String LOGOUT_URI = "logoutUri";
     public static final String ID_TOKEN_VALIDATE = "idToken.validate.enabled";
+    public static final String ID_TOKEN_ISSUER = "idToken.issuer";
 }

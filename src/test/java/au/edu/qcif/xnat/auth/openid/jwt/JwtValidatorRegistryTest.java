@@ -19,8 +19,11 @@ import org.mockito.junit.MockitoJUnitRunner;
 import java.util.Arrays;
 import java.util.Date;
 
+import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.ID_TOKEN_ISSUER;
 import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.ISSUER;
 import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.JWKS_URI;
+import static au.edu.qcif.xnat.auth.openid.gate.AuthPath.BEARER;
+import static au.edu.qcif.xnat.auth.openid.gate.AuthPath.ID_TOKEN;
 import static com.github.tomakehurst.wiremock.client.WireMock.aResponse;
 import static com.github.tomakehurst.wiremock.client.WireMock.get;
 import static com.github.tomakehurst.wiremock.client.WireMock.stubFor;
@@ -29,6 +32,7 @@ import static com.github.tomakehurst.wiremock.core.WireMockConfiguration.options
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.fail;
 import static org.mockito.Mockito.lenient;
 
 @RunWith(MockitoJUnitRunner.class)
@@ -44,6 +48,25 @@ public class JwtValidatorRegistryTest {
         lenient().when(plugin.getProperty(providerId, JWKS_URI)).thenReturn(jwksUri);
     }
 
+    private String serveJwks(final RSAKey key) {
+        stubFor(get(urlEqualTo("/jwks")).willReturn(aResponse()
+                .withStatus(200)
+                .withHeader("Content-Type", "application/json")
+                .withBody(new JWKSet(key.toPublicJWK()).toString())));
+        return "http://localhost:" + wireMock.port() + "/jwks";
+    }
+
+    private static String signed(final RSAKey key, final String issuer) throws Exception {
+        final SignedJWT jwt = new SignedJWT(new JWSHeader.Builder(JWSAlgorithm.RS256).keyID(key.getKeyID()).build(),
+                new JWTClaimsSet.Builder()
+                        .issuer(issuer)
+                        .subject("alice")
+                        .expirationTime(new Date(System.currentTimeMillis() + 3_600_000))
+                        .build());
+        jwt.sign(new RSASSASigner(key));
+        return jwt.serialize();
+    }
+
     @Test
     public void buildsValidatorsOnlyForProvidersWithIssuerAndJwksUri() {
         lenient().when(plugin.getEnabledProviders()).thenReturn(Arrays.asList("both", "issuerOnly", "neither"));
@@ -53,9 +76,9 @@ public class JwtValidatorRegistryTest {
 
         final JwtValidatorRegistry registry = new JwtValidatorRegistry(plugin);
 
-        assertNotNull(registry.get("both"));
-        assertNull(registry.get("issuerOnly"));
-        assertNull(registry.get("neither"));
+        assertNotNull(registry.get("both", ID_TOKEN));
+        assertNull(registry.get("issuerOnly", ID_TOKEN));
+        assertNull(registry.get("neither", ID_TOKEN));
     }
 
     @Test
@@ -67,29 +90,38 @@ public class JwtValidatorRegistryTest {
 
         final JwtValidatorRegistry registry = new JwtValidatorRegistry(plugin);
 
-        assertNull(registry.get("relative"));
-        assertNull(registry.get("unparseable"));
-        assertNull(registry.get("unknownScheme"));
+        assertNull(registry.get("relative", ID_TOKEN));
+        assertNull(registry.get("unparseable", ID_TOKEN));
+        assertNull(registry.get("unknownScheme", ID_TOKEN));
     }
 
     @Test
     public void trimsIssuerAndJwksUri() throws Exception {
         final RSAKey key = new RSAKeyGenerator(2048).keyID("k1").generate();
-        stubFor(get(urlEqualTo("/jwks")).willReturn(aResponse()
-                .withStatus(200)
-                .withHeader("Content-Type", "application/json")
-                .withBody(new JWKSet(key.toPublicJWK()).toString())));
         lenient().when(plugin.getEnabledProviders()).thenReturn(Arrays.asList("padded"));
-        provider("padded", " https://idp.example ", " http://localhost:" + wireMock.port() + "/jwks ");
+        provider("padded", " https://idp.example ", " " + serveJwks(key) + " ");
 
-        final SignedJWT jwt = new SignedJWT(new JWSHeader.Builder(JWSAlgorithm.RS256).keyID("k1").build(),
-                new JWTClaimsSet.Builder()
-                        .issuer("https://idp.example")
-                        .subject("alice")
-                        .expirationTime(new Date(System.currentTimeMillis() + 3_600_000))
-                        .build());
-        jwt.sign(new RSASSASigner(key));
+        final JwtValidator validator = new JwtValidatorRegistry(plugin).get("padded", ID_TOKEN);
 
-        assertEquals("alice", new JwtValidatorRegistry(plugin).get("padded").validate(jwt.serialize()).getSubject());
+        assertEquals("alice", validator.validate(signed(key, "https://idp.example")).getSubject());
+    }
+
+    @Test
+    public void checksIdTokensAgainstIdTokenIssuerWhenSet() throws Exception {
+        final RSAKey key = new RSAKeyGenerator(2048).keyID("k1").generate();
+        lenient().when(plugin.getEnabledProviders()).thenReturn(Arrays.asList("entra"));
+        provider("entra", "https://sts.example/tenant/", serveJwks(key));
+        lenient().when(plugin.getProperty("entra", ID_TOKEN_ISSUER)).thenReturn("https://login.example/tenant/v2.0");
+
+        final JwtValidatorRegistry registry = new JwtValidatorRegistry(plugin);
+
+        assertEquals("alice", registry.get("entra", ID_TOKEN).validate(signed(key, "https://login.example/tenant/v2.0")).getSubject());
+        assertEquals("alice", registry.get("entra", BEARER).validate(signed(key, "https://sts.example/tenant/")).getSubject());
+        try {
+            registry.get("entra", ID_TOKEN).validate(signed(key, "https://sts.example/tenant/"));
+            fail("expected JwtValidationException");
+        } catch (JwtValidationException expected) {
+            // pass
+        }
     }
 }
