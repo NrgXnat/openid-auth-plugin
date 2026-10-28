@@ -11,7 +11,7 @@ Adds OpenID Connect (OIDC) authentication support to XNAT.
 * The ID token received at interactive login is now validated: signature against `jwksUri`, `iss` against `issuer`, and expiry. This is on by default for providers with both properties set. Providers without them log a warning at startup and are not validated, unless `idToken.validate.enabled=true`, in which case XNAT fails to start. Controlled per provider by `openid.<providerId>.idToken.validate.enabled`.
     * `openid.<providerId>.idToken.issuer` sets the `iss` expected in ID tokens when it differs from the one in access tokens. Defaults to `issuer`.
 
-#### 1.7.0 - Fixes
+#### 2.0.0 - Fixes
 * A user who follows a link into XNAT while signed out now lands on the requested page after signing in through OpenID, by auto-login or a "Sign in with ..." link, instead of on `Index.vm`. Starting the OpenID flow discarded the session that held the requested page.
 
 ## <a name="1.6.0"></a>OpenID Authentication Plugin Version 1.6.x Release Notes
