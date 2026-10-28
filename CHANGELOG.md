@@ -12,7 +12,7 @@ Adds OpenID Connect (OIDC) authentication support to XNAT.
     * `openid.<providerId>.idToken.issuer` sets the `iss` expected in ID tokens when it differs from the one in access tokens. Defaults to `issuer`.
 
 #### 1.7.0 - Fixes
-* A user who follows a link into XNAT while signed out now lands on the requested page after signing in through OpenID, by auto-login or a "Sign in with ..." link, instead of on `Index.vm`. Starting the OpenID flow discarded the session that held the requested page. A URL fragment (`#...`) is restored only when the provider signs the user in without showing its own login page.
+* A user who follows a link into XNAT while signed out now lands on the requested page after signing in through OpenID, by auto-login or a "Sign in with ..." link, instead of on `Index.vm`. Starting the OpenID flow discarded the session that held the requested page.
 
 ## <a name="1.6.0"></a>OpenID Authentication Plugin Version 1.6.x Release Notes
 
