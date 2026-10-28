@@ -1,4 +1,4 @@
-package au.edu.qcif.xnat.auth.openid.bearer;
+package au.edu.qcif.xnat.auth.openid.jwt;
 
 import com.github.tomakehurst.wiremock.junit.WireMockRule;
 import com.nimbusds.jose.JWSAlgorithm;
@@ -24,13 +24,8 @@ import static com.github.tomakehurst.wiremock.core.WireMockConfiguration.options
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.fail;
 
-/**
- * Integration test for {@link BearerTokenValidator#forRemoteJwks}: it fetches the issuer's public
- * keys from a JWKS endpoint (served here by WireMock) and uses them to verify the token signature.
- * Confirms the remote-JWKS wiring and JSON shape end to end — a token signed by the published key is
- * accepted, while a token whose {@code kid} is absent from the JWKS is rejected.
- */
-public class BearerTokenValidatorJwksIntegrationTest {
+/** Exercises {@link JwtValidator#remoteJwks} against a JWKS endpoint served by WireMock. */
+public class JwtValidatorJwksIntegrationTest {
 
     private static final String ISSUER = "https://idp.example/realms/xnat";
 
@@ -46,12 +41,12 @@ public class BearerTokenValidatorJwksIntegrationTest {
         unpublishedKey = new RSAKeyGenerator(2048).keyID("k99").generate();
     }
 
-    private BearerTokenValidator remoteValidator() throws Exception {
+    private JwtValidator remoteValidator() throws Exception {
         stubFor(get(urlEqualTo("/jwks")).willReturn(aResponse()
                 .withStatus(200)
                 .withHeader("Content-Type", "application/json")
                 .withBody(new JWKSet(publishedKey.toPublicJWK()).toString())));
-        return BearerTokenValidator.forRemoteJwks(ISSUER, new URL("http://localhost:" + wireMock.port() + "/jwks"));
+        return new JwtValidator(ISSUER, JwtValidator.remoteJwks(new URL("http://localhost:" + wireMock.port() + "/jwks")));
     }
 
     private static String sign(final RSAKey key) throws Exception {
@@ -75,11 +70,11 @@ public class BearerTokenValidatorJwksIntegrationTest {
 
     @Test
     public void rejectsTokenWithKidNotInJwks() throws Exception {
-        final BearerTokenValidator validator = remoteValidator();
+        final JwtValidator validator = remoteValidator();
         try {
             validator.validate(sign(unpublishedKey));
-            fail("expected BearerTokenValidationException");
-        } catch (BearerTokenValidationException expected) {
+            fail("expected JwtValidationException");
+        } catch (JwtValidationException expected) {
             // pass — no matching key in the JWKS
         }
     }

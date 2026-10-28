@@ -1,6 +1,7 @@
 package au.edu.qcif.xnat.auth.openid;
 
 import au.edu.qcif.xnat.auth.openid.gate.TokenContext;
+import au.edu.qcif.xnat.auth.openid.jwt.JwtValidatorRegistry;
 import au.edu.qcif.xnat.auth.openid.service.KeystoreService;
 import com.nimbusds.jwt.JWTClaimsSet;
 import org.junit.Test;
@@ -50,7 +51,7 @@ public class OpenIdConnectFilterClaimGateTest {
         lenient().when(plugin.getRedirectUri()).thenReturn("/openid/callback");
         lenient().when(plugin.getEnabledProviders()).thenReturn(Collections.singletonList(PROVIDER));
         providerProps.forEach((key, value) -> lenient().when(plugin.getProperty(PROVIDER, key)).thenReturn(value));
-        return new OpenIdConnectFilter(plugin, eventPublisher, userAuthService, siteConfigPreferences, keystoreService, Runnable::run);
+        return new OpenIdConnectFilter(plugin, eventPublisher, userAuthService, siteConfigPreferences, keystoreService, new JwtValidatorRegistry(plugin), Runnable::run);
     }
 
     private static void applyIdTokenClaimGates(final OpenIdConnectFilter filter, final String providerId,

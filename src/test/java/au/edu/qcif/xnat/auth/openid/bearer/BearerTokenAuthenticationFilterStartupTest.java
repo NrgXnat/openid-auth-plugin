@@ -3,6 +3,7 @@ package au.edu.qcif.xnat.auth.openid.bearer;
 import au.edu.qcif.xnat.auth.openid.OpenIdAccountPolicy;
 import au.edu.qcif.xnat.auth.openid.OpenIdAuthPlugin;
 import au.edu.qcif.xnat.auth.openid.OpenIdUserResolver;
+import au.edu.qcif.xnat.auth.openid.jwt.JwtValidatorRegistry;
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
@@ -74,7 +75,7 @@ public class BearerTokenAuthenticationFilterStartupTest {
     /** A filter built through the test seam, so only the reporting under test runs. */
     private BearerTokenAuthenticationFilter filter() {
         return new BearerTokenAuthenticationFilter(plugin, mock(BearerTokenExtractor.class),
-                                                   mock(BearerProviderResolver.class), Collections.emptyMap(),
+                                                   mock(BearerProviderResolver.class), new JwtValidatorRegistry(Collections.emptyMap()),
                                                    null, mock(OpenIdUserResolver.class),
                                                    mock(OpenIdAccountPolicy.class),
                                                    mock(AuthenticationEventPublisher.class));

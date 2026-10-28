@@ -2,6 +2,16 @@
 
 Adds OpenID Connect (OIDC) authentication support to XNAT.
 
+## <a name="2.0.0"></a>OpenID Authentication Plugin Version 2.0.x Release Notes
+**BREAKING CHANGE:** 2.0.0 validates the ID token at login for every provider that has both `issuer` and `jwksUri` set. Before upgrading, check that each such provider signs its ID tokens with `RS256`, `RS384` or `RS512` and that their `iss` exactly matches the configured `issuer`, or logins through it will fail. If a provider's ID tokens carry a different `iss` from its access tokens, as Microsoft Entra's do when it issues v1 access tokens, set `openid.<providerId>.idToken.issuer` to the ID tokens' value. To keep the previous behaviour for a provider, set `openid.<providerId>.idToken.validate.enabled=false`.
+
+### <a name="2.0.0"></a>Version 2.0.0
+
+#### 2.0.0 - New Features
+* The ID token received at interactive login is now validated: signature against `jwksUri`, `iss` against `issuer`, and expiry. This is on by default for providers with both properties set. Providers without them log a warning at startup and are not validated, unless `idToken.validate.enabled=true`, in which case XNAT fails to start. Controlled per provider by `openid.<providerId>.idToken.validate.enabled`.
+    * `openid.<providerId>.idToken.issuer` sets the `iss` expected in ID tokens when it differs from the one in access tokens. Defaults to `issuer`.
+
+
 ## <a name="1.6.0"></a>OpenID Authentication Plugin Version 1.6.x Release Notes
 
 ### <a name="1.6.0"></a>Version 1.6.0
