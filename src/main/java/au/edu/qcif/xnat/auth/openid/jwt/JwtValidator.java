@@ -34,11 +34,13 @@ public class JwtValidator {
     private static final Set<JWSAlgorithm> ACCEPTED_ALGORITHMS =
             new LinkedHashSet<>(Arrays.asList(JWSAlgorithm.RS256, JWSAlgorithm.RS384, JWSAlgorithm.RS512));
 
-    // A fetch and its retry must finish within JWKSourceBuilder.DEFAULT_CACHE_REFRESH_TIMEOUT (15 s),
-    // or requests queued behind the refresh give up.
+    private static final long JWKS_CACHE_TTL_MS = 300_000;
+    private static final long JWKS_OUTAGE_TOLERANCE_MS = 10 * JWKS_CACHE_TTL_MS;
+    private static final long JWKS_REFETCH_MIN_INTERVAL_MS = 30_000;
+    // Must exceed a fetch plus its retry, or requests queued behind the refresh give up.
+    private static final long JWKS_CACHE_REFRESH_TIMEOUT_MS = 15_000;
     private static final int JWKS_CONNECT_TIMEOUT_MS = 2_000;
     private static final int JWKS_READ_TIMEOUT_MS = 4_000;
-    private static final long JWKS_OUTAGE_TOLERANCE_MS = 10 * JWKSourceBuilder.DEFAULT_CACHE_TIME_TO_LIVE;
 
     private final DefaultJWTProcessor<SecurityContext> processor;
 
@@ -55,6 +57,8 @@ public class JwtValidator {
         final DefaultResourceRetriever retriever = new DefaultResourceRetriever(
                 JWKS_CONNECT_TIMEOUT_MS, JWKS_READ_TIMEOUT_MS, JWKSourceBuilder.DEFAULT_HTTP_SIZE_LIMIT);
         return JWKSourceBuilder.create(jwksUri, retriever)
+                .cache(JWKS_CACHE_TTL_MS, JWKS_CACHE_REFRESH_TIMEOUT_MS)
+                .rateLimited(JWKS_REFETCH_MIN_INTERVAL_MS)
                 .retrying(event -> {
                     if (event instanceof RetryingJWKSetSource.RetrialEvent<?> retrial) {
                         log.warn("Fetching JWKS from {} failed, retrying once: {}",
