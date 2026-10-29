@@ -238,7 +238,8 @@ works if your provider emits a `typ` that distinguishes the token kinds.
 
 #### openid.`providerId`.bearer.typCheck.expectedTypes / openid.`providerId`.idToken.typCheck.expectedTypes
 
-Comma-delimited list of accepted `typ` values for that path (a case-sensitive any-of test). **Set
+Comma-delimited list of accepted `typ` values for that path (a case-sensitive any-of test; a header `typ` may also carry an `application/` prefix, so `at+jwt`
+and `application/at+jwt` are equivalent). **Set
 this per path**, because the expected type legitimately differs between the two paths (e.g. bearer
 `at+jwt,Bearer` versus idToken `JWT,ID`). A shared `openid.providerId.typCheck.expectedTypes` is
 supported by the resolution rules but discouraged: a single value would be wrong for at least one
@@ -260,7 +261,8 @@ authenticated request is **stateless** — no XNAT session (`JSESSIONID`) is cre
 
 A bearer token is always validated the same way as an ID token (see
 [ID-token validation](#id-token-validation)): signature, `iss` and `exp`. Its header `typ`, if any,
-must be `JWT` or `at+jwt`.
+must be `JWT` or `at+jwt` (case-insensitively, with or without an `application/` prefix). An ID
+token's header `typ`, if any, must be `JWT`, whatever `typCheck` is set to.
 
 Once the token is validated, a bearer caller is held to the **same account policy as an interactive
 login** for that provider: the per-provider email-domain whitelist

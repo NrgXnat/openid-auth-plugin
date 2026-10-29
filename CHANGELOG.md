@@ -14,7 +14,7 @@ Adds OpenID Connect (OIDC) authentication support to XNAT.
 #### 2.0.0 - Fixes
 * A user who follows a link into XNAT while signed out now lands on the requested page after signing in through OpenID, by auto-login or a "Sign in with ..." link, instead of on `Index.vm`. Starting the OpenID flow discarded the session that held the requested page.
 * Token validation now tolerates a slow or briefly unreachable JWKS endpoint: fetches time out after 2 s to connect and 4 s to respond, are retried once, and fall back to the last fetched keys.
-* Bearer tokens with a header `typ` of `at+jwt` (RFC 9068 access tokens) are no longer rejected. The type gate treats `at+jwt` and `application/at+jwt` as the same.
+* Bearer tokens with a header `typ` of `at+jwt` (RFC 9068 access tokens) are accepted. A header `typ` may carry an optional `application/` prefix.
 
 ## <a name="1.6.0"></a>OpenID Authentication Plugin Version 1.6.x Release Notes
 
