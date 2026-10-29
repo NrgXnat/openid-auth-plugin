@@ -102,6 +102,11 @@ public class TypeGateTest {
     }
 
     @Test
+    public void applicationPrefixIsNotIgnoredOnBodyTyp() {
+        assertRejects(new TypeGate(expecting("Bearer")), withBodyTyp("application/Bearer"));
+    }
+
+    @Test
     public void matchIsCaseSensitive() {
         assertRejects(new TypeGate(expecting("id")), withBodyTyp("ID"));
     }
