@@ -77,7 +77,7 @@ public class JwtValidatorTest {
 
     @Test
     public void acceptsAccessTokenTypes() throws Exception {
-        for (final String typ : new String[]{"at+jwt", "application/at+jwt"}) {
+        for (final String typ : new String[]{"JWT", "application/jwt", "at+jwt", "application/at+jwt"}) {
             final String token = signedToken(signingKey, new JOSEObjectType(typ), validClaims().build());
             assertEquals("alice", validator().validate(token).getSubject());
         }

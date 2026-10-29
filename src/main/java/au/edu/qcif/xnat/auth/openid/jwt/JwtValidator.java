@@ -1,5 +1,6 @@
 package au.edu.qcif.xnat.auth.openid.jwt;
 
+import au.edu.qcif.xnat.auth.openid.etc.MediaTypes;
 import com.nimbusds.jose.JOSEException;
 import com.nimbusds.jose.JOSEObjectType;
 import com.nimbusds.jose.JWSAlgorithm;
@@ -46,9 +47,8 @@ public class JwtValidator {
     private static final int JWKS_READ_TIMEOUT_MS = 4_000;
 
     // null accepts a token with no header typ
-    public static final Set<JOSEObjectType> ID_TOKEN_TYPES = types(JOSEObjectType.JWT, null);
-    public static final Set<JOSEObjectType> ACCESS_TOKEN_TYPES = types(JOSEObjectType.JWT, null,
-            new JOSEObjectType("at+jwt"), new JOSEObjectType("application/at+jwt"));
+    public static final Set<JOSEObjectType> ID_TOKEN_TYPES = types("JWT");
+    public static final Set<JOSEObjectType> ACCESS_TOKEN_TYPES = types("JWT", "at+jwt");
 
     private final DefaultJWTProcessor<SecurityContext> processor;
 
@@ -63,8 +63,14 @@ public class JwtValidator {
         this.processor = processor;
     }
 
-    private static Set<JOSEObjectType> types(final JOSEObjectType... types) {
-        return Collections.unmodifiableSet(new HashSet<>(Arrays.asList(types)));
+    private static Set<JOSEObjectType> types(final String... subtypes) {
+        final Set<JOSEObjectType> types = new HashSet<>();
+        types.add(null);
+        for (final String subtype : subtypes) {
+            types.add(new JOSEObjectType(subtype));
+            types.add(new JOSEObjectType(MediaTypes.withApplicationPrefix(subtype)));
+        }
+        return Collections.unmodifiableSet(types);
     }
 
     public static JWKSource<SecurityContext> remoteJwks(final URL jwksUri) {

@@ -1,5 +1,6 @@
 package au.edu.qcif.xnat.auth.openid.gate;
 
+import au.edu.qcif.xnat.auth.openid.etc.MediaTypes;
 import org.apache.commons.lang3.StringUtils;
 
 import java.util.LinkedHashSet;
@@ -26,7 +27,7 @@ final class TypeGate implements ClaimGate {
 
     TypeGate(final Set<String> expectedTypes) {
         this.expectedTypes = new LinkedHashSet<>(expectedTypes);
-        this.normalizedExpectedTypes = expectedTypes.stream().map(TypeGate::withoutApplicationPrefix).collect(Collectors.toSet());
+        this.normalizedExpectedTypes = expectedTypes.stream().map(MediaTypes::withoutApplicationPrefix).collect(Collectors.toSet());
     }
 
     @Override
@@ -40,16 +41,11 @@ final class TypeGate implements ClaimGate {
             fromHeader = true;
         }
         final boolean accepted = typ != null && (fromHeader
-                ? normalizedExpectedTypes.contains(withoutApplicationPrefix(typ))
+                ? normalizedExpectedTypes.contains(MediaTypes.withoutApplicationPrefix(typ))
                 : expectedTypes.contains(typ) || normalizedExpectedTypes.contains(typ));
         if (!accepted) {
             throw new ClaimGateException(
                     "Token typ '" + typ + "' is not one of the accepted types " + expectedTypes);
         }
-    }
-
-    private static String withoutApplicationPrefix(final String typ) {
-        final String subtype = StringUtils.removeStart(typ, "application/");
-        return subtype.contains("/") ? typ : subtype;
     }
 }
