@@ -166,7 +166,10 @@ while ID tokens from the v2.0 endpoint carry `https://login.microsoftonline.com/
 #### openid.`providerId`.jwksUri
 
 The provider's JWKS (JSON Web Key Set) endpoint, whose public keys verify token signatures. The key
-set is cached and re-fetched on key rotation.
+set is cached and re-fetched on key rotation. A fetch waits up to 2 seconds to connect and 4 seconds
+for a response, and a failed fetch is retried once. If the endpoint is unreachable, the last fetched
+keys stay in use for about 50 minutes after they were fetched. Failed fetches are logged as
+warnings naming the URL.
 
 #### openid.`providerId`.idToken.validate.enabled
 
