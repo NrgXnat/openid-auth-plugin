@@ -8,6 +8,7 @@ import com.nimbusds.jose.proc.SecurityContext;
 import com.nimbusds.jose.jwk.source.JWKSource;
 import com.nimbusds.jose.jwk.source.JWKSourceBuilder;
 import com.nimbusds.jose.jwk.source.OutageTolerantJWKSetSource;
+import com.nimbusds.jose.jwk.source.RateLimitReachedException;
 import com.nimbusds.jose.jwk.source.RetryingJWKSetSource;
 import com.nimbusds.jose.util.DefaultResourceRetriever;
 import com.nimbusds.jwt.JWTClaimsSet;
@@ -73,6 +74,9 @@ public class JwtValidator {
     public JWTClaimsSet validate(final String rawJwt) throws JwtValidationException {
         try {
             return processor.process(rawJwt, null);
+        } catch (final RateLimitReachedException e) {
+            throw new JwtValidationException(
+                    "No key in the cached JWKS matches the token, and the JWKS refetch rate limit has been reached", e);
         } catch (final ParseException | BadJOSEException | JOSEException e) {
             throw new JwtValidationException(e.getMessage(), e);
         }

@@ -98,6 +98,23 @@ public class JwtValidatorJwksIntegrationTest {
     }
 
     @Test
+    public void explainsRejectionWhenJwksRefetchIsRateLimited() throws Exception {
+        stubFor(get(urlEqualTo("/jwks")).willReturn(jwks()));
+        final JwtValidator validator = validator();
+        try {
+            validator.validate(sign(unpublishedKey)); // initial fetch plus one refetch use up the limit
+        } catch (JwtValidationException ignored) {
+            // no matching key
+        }
+        try {
+            validator.validate(sign(unpublishedKey));
+            fail("expected JwtValidationException");
+        } catch (JwtValidationException expected) {
+            assertTrue(expected.getMessage(), expected.getMessage().contains("rate limit"));
+        }
+    }
+
+    @Test
     public void waitsForSlowJwksEndpoint() throws Exception {
         stubFor(get(urlEqualTo("/jwks")).willReturn(jwks().withFixedDelay(1_500)));
 
