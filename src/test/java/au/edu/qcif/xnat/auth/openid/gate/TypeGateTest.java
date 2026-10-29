@@ -96,6 +96,17 @@ public class TypeGateTest {
     }
 
     @Test
+    public void applicationPrefixIsOptional() {
+        assertPasses(new TypeGate(expecting("at+jwt")), withHeaderTyp("application/at+jwt"));
+        assertPasses(new TypeGate(expecting("application/at+jwt")), withHeaderTyp("at+jwt"));
+    }
+
+    @Test
+    public void applicationPrefixIsNotIgnoredOnBodyTyp() {
+        assertRejects(new TypeGate(expecting("Bearer")), withBodyTyp("application/Bearer"));
+    }
+
+    @Test
     public void matchIsCaseSensitive() {
         assertRejects(new TypeGate(expecting("id")), withBodyTyp("ID"));
     }

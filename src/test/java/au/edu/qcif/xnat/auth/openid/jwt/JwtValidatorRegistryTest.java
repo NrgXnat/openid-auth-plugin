@@ -2,6 +2,7 @@ package au.edu.qcif.xnat.auth.openid.jwt;
 
 import au.edu.qcif.xnat.auth.openid.OpenIdAuthPlugin;
 import com.github.tomakehurst.wiremock.junit.WireMockRule;
+import com.nimbusds.jose.JOSEObjectType;
 import com.nimbusds.jose.JWSAlgorithm;
 import com.nimbusds.jose.JWSHeader;
 import com.nimbusds.jose.crypto.RSASSASigner;
@@ -57,7 +58,11 @@ public class JwtValidatorRegistryTest {
     }
 
     private static String signed(final RSAKey key, final String issuer) throws Exception {
-        final SignedJWT jwt = new SignedJWT(new JWSHeader.Builder(JWSAlgorithm.RS256).keyID(key.getKeyID()).build(),
+        return signed(key, issuer, null);
+    }
+
+    private static String signed(final RSAKey key, final String issuer, final JOSEObjectType typ) throws Exception {
+        final SignedJWT jwt = new SignedJWT(new JWSHeader.Builder(JWSAlgorithm.RS256).keyID(key.getKeyID()).type(typ).build(),
                 new JWTClaimsSet.Builder()
                         .issuer(issuer)
                         .subject("alice")
@@ -119,6 +124,24 @@ public class JwtValidatorRegistryTest {
         assertEquals("alice", registry.get("entra", BEARER).validate(signed(key, "https://sts.example/tenant/")).getSubject());
         try {
             registry.get("entra", ID_TOKEN).validate(signed(key, "https://sts.example/tenant/"));
+            fail("expected JwtValidationException");
+        } catch (JwtValidationException expected) {
+            // pass
+        }
+    }
+
+    @Test
+    public void acceptsAccessTokenTypeOnlyOnBearerPath() throws Exception {
+        final RSAKey key = new RSAKeyGenerator(2048).keyID("k1").generate();
+        lenient().when(plugin.getEnabledProviders()).thenReturn(Arrays.asList("idp"));
+        provider("idp", "https://idp.example", serveJwks(key));
+        final String accessToken = signed(key, "https://idp.example", new JOSEObjectType("at+jwt"));
+
+        final JwtValidatorRegistry registry = new JwtValidatorRegistry(plugin);
+
+        assertEquals("alice", registry.get("idp", BEARER).validate(accessToken).getSubject());
+        try {
+            registry.get("idp", ID_TOKEN).validate(accessToken);
             fail("expected JwtValidationException");
         } catch (JwtValidationException expected) {
             // pass

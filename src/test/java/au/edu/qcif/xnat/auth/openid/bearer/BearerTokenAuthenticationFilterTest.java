@@ -9,6 +9,7 @@ import au.edu.qcif.xnat.auth.openid.gate.ClaimGateFactory;
 import au.edu.qcif.xnat.auth.openid.jwt.JwtValidator;
 import au.edu.qcif.xnat.auth.openid.jwt.JwtValidatorRegistry;
 import au.edu.qcif.xnat.auth.openid.tokens.OpenIdAuthToken;
+import com.nimbusds.jose.JOSEObjectType;
 import com.nimbusds.jose.JWSAlgorithm;
 import com.nimbusds.jose.JWSHeader;
 import com.nimbusds.jose.crypto.RSASSASigner;
@@ -107,7 +108,7 @@ public class BearerTokenAuthenticationFilterTest {
         lenient().when(plugin.getProperty(PROVIDER, "audCheck.acceptedAudiences")).thenReturn(AUDIENCE);
 
         final JwtValidatorRegistry validators = new JwtValidatorRegistry(
-                Collections.singletonMap(PROVIDER, new JwtValidator(ISSUER, trustedSource)));
+                Collections.singletonMap(PROVIDER, new JwtValidator(ISSUER, trustedSource, JwtValidator.ACCESS_TOKEN_TYPES)));
 
         final OpenIdAccountPolicy accountPolicy = new OpenIdAccountPolicy(plugin, siteConfigPreferences);
         filter = new BearerTokenAuthenticationFilter(plugin, new BearerTokenExtractor(),
@@ -135,10 +136,20 @@ public class BearerTokenAuthenticationFilterTest {
     }
 
     private static String sign(final RSAKey key, final JWTClaimsSet claims) throws Exception {
+        return sign(key, null, claims);
+    }
+
+    private static String sign(final RSAKey key, final JOSEObjectType typ, final JWTClaimsSet claims)
+            throws Exception {
         final SignedJWT jwt = new SignedJWT(
-                new JWSHeader.Builder(JWSAlgorithm.RS256).keyID(key.getKeyID()).build(), claims);
+                new JWSHeader.Builder(JWSAlgorithm.RS256).keyID(key.getKeyID()).type(typ).build(), claims);
         jwt.sign(new RSASSASigner(key));
         return jwt.serialize();
+    }
+
+    private void typeGateExpects(final String expectedTypes) {
+        when(plugin.getProperty(PROVIDER, "typCheck.enabled")).thenReturn("true");
+        when(plugin.getProperty(PROVIDER, "bearer.typCheck.expectedTypes")).thenReturn(expectedTypes);
     }
 
     private void bearer(final String token) {
@@ -204,6 +215,19 @@ public class BearerTokenAuthenticationFilterTest {
         assertTrue(auth instanceof OpenIdAuthToken);
         assertEquals(PROVIDER, ((OpenIdAuthToken) auth).getProviderId());
         assertNull("the bearer path must not create a session", request.getSession(false));
+    }
+
+    @Test
+    public void expectedTokenTypeAuthenticates() throws Exception {
+        typeGateExpects("at+jwt");
+        final UserI user = enabledUser();
+        when(userResolver.resolveExisting(USERNAME, PROVIDER)).thenReturn(user);
+        bearer(sign(signingKey, new JOSEObjectType("at+jwt"), validClaims().build()));
+
+        doFilter();
+
+        assertNotNull("chain should be invoked", chain.getRequest());
+        assertTrue(currentAuth() instanceof OpenIdAuthToken);
     }
 
     @Test
@@ -284,6 +308,18 @@ public class BearerTokenAuthenticationFilterTest {
         final Map<String, Object> resourceAccess = new HashMap<>();
         resourceAccess.put("xnat", xnat);
         bearer(sign(signingKey, validClaims().claim("resource_access", resourceAccess).build()));
+
+        doFilter();
+
+        assertEquals(HttpServletResponse.SC_FORBIDDEN, response.getStatus());
+        assertNull("chain must not be invoked", chain.getRequest());
+        assertNull(currentAuth());
+    }
+
+    @Test
+    public void unexpectedTokenTypeIsForbidden() throws Exception {
+        typeGateExpects("Bearer");
+        bearer(sign(signingKey, new JOSEObjectType("at+jwt"), validClaims().build()));
 
         doFilter();
 
@@ -407,7 +443,8 @@ public class BearerTokenAuthenticationFilterTest {
         final OpenIdAccountPolicy accountPolicy = new OpenIdAccountPolicy(plugin, siteConfigPreferences);
         filter = new BearerTokenAuthenticationFilter(plugin, new BearerTokenExtractor(),
                 new BearerProviderResolver(plugin),
-                new JwtValidatorRegistry(Collections.singletonMap(PROVIDER, new JwtValidator(ISSUER, trustedSource))),
+                new JwtValidatorRegistry(Collections.singletonMap(PROVIDER,
+                        new JwtValidator(ISSUER, trustedSource, JwtValidator.ACCESS_TOKEN_TYPES))),
                 new ClaimGateFactory(plugin), userResolver, accountPolicy, eventPublisher);
 
         bearer(sign(signingKey, validClaims().claim("email", "alice@gmail.com").build()));
