@@ -1,5 +1,6 @@
 package au.edu.qcif.xnat.auth.openid.jwt;
 
+import com.nimbusds.jose.JOSEObjectType;
 import com.nimbusds.jose.JWSAlgorithm;
 import com.nimbusds.jose.JWSHeader;
 import com.nimbusds.jose.crypto.RSASSASigner;
@@ -36,12 +37,17 @@ public class JwtValidatorTest {
     }
 
     private static JwtValidator validator() {
-        return new JwtValidator(ISSUER, trustedSource);
+        return new JwtValidator(ISSUER, trustedSource, JwtValidator.ACCESS_TOKEN_TYPES);
     }
 
     private static String signedToken(final RSAKey key, final JWTClaimsSet claims) throws Exception {
+        return signedToken(key, null, claims);
+    }
+
+    private static String signedToken(final RSAKey key, final JOSEObjectType typ, final JWTClaimsSet claims)
+            throws Exception {
         final SignedJWT jwt = new SignedJWT(
-                new JWSHeader.Builder(JWSAlgorithm.RS256).keyID(key.getKeyID()).build(), claims);
+                new JWSHeader.Builder(JWSAlgorithm.RS256).keyID(key.getKeyID()).type(typ).build(), claims);
         jwt.sign(new RSASSASigner(key));
         return jwt.serialize();
     }
@@ -67,6 +73,19 @@ public class JwtValidatorTest {
         final JWTClaimsSet claims = validator().validate(signedToken(signingKey, validClaims().build()));
         assertEquals("alice", claims.getSubject());
         assertEquals(ISSUER, claims.getIssuer());
+    }
+
+    @Test
+    public void acceptsAccessTokenTypes() throws Exception {
+        for (final String typ : new String[]{"JWT", "application/jwt", "at+jwt", "application/at+jwt"}) {
+            final String token = signedToken(signingKey, new JOSEObjectType(typ), validClaims().build());
+            assertEquals("alice", validator().validate(token).getSubject());
+        }
+    }
+
+    @Test
+    public void rejectsOtherTokenTypes() throws Exception {
+        assertRejected(signedToken(signingKey, new JOSEObjectType("logout+jwt"), validClaims().build()));
     }
 
     @Test

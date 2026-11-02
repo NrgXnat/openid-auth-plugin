@@ -61,7 +61,8 @@ public class JwtValidatorJwksIntegrationTest {
     }
 
     private JwtValidator validator() throws Exception {
-        return new JwtValidator(ISSUER, JwtValidator.remoteJwks(new URL(jwksUrl())));
+        return new JwtValidator(ISSUER, JwtValidator.remoteJwks(new URL(jwksUrl())),
+                JwtValidator.ACCESS_TOKEN_TYPES);
     }
 
     private static String sign(final RSAKey key) throws Exception {
