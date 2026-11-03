@@ -126,6 +126,15 @@ Behind an edge proxy that already brokers OIDC (e.g. oauth2-proxy), point `logou
 
 Notes: with unified logout the provider must allow XNAT's post-logout redirect URI, so register the XNAT login URL as an allowed post-logout redirect on the client. Sending `id_token_hint` requires the ID token, which the plugin keeps server-side (never in a browser cookie, never readable by JavaScript) and stores only when `logoutUri` is set. Per the RP-Initiated Logout spec the hint does travel in the end-session redirect URL, so it reaches browser history and the provider's logs — note it is an audience-restricted ID token, not an access or refresh token.
 
+### openid.`providerId`.session.onInvalid
+
+What happens to a browser request carrying an XNAT session cookie that XNAT no longer recognises: the session timed out, or XNAT restarted since it was issued. Only meaningful together with `autoLogin`. Defaults to `logout`.
+
+- **`logout`:** the request goes through XNAT's logout, as described under `autoLogin`, so XNAT's idle timeout is enforced. With `logoutUri` set, this also ends the provider (SSO) session.
+- **`reauth`:** a page load is sent through sign-in again instead: XNAT starts a new session and reloads the requested URL, auto-login finds the provider session, and the user lands back on the page. If the provider session has ended too, the user gets the login page. A form submitted from a page whose session has lapsed can't be saved, since its CSRF token belonged to the old session, so the user is sent back to the form's page the same way and has to submit it again. Background requests (XHR, `fetch`), and form submissions without a `Referer` from this XNAT, are still handled as with `logout`.
+
+Use `reauth` when XNAT is one of several applications sharing the provider's SSO session and `logoutUri` ends that session. With `logout` there, the first page load after XNAT's session lapses (after a night away, a restart or a redeploy) signs the user out of every application. With `reauth`, XNAT's idle timeout no longer ends a browser user's access while the provider session is alive, so set idle and absolute limits on the provider's SSO session instead. On a site that allows guest access, a page load that guests can see is shown as a guest rather than going through auto-login.
+
 ### openid.`providerId`.shouldFilterEmailDomains
 
 Controls whether domains of the email should be compared against the whitelist: `allowedEmailDomains`.

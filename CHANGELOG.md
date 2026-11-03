@@ -10,6 +10,7 @@ Adds OpenID Connect (OIDC) authentication support to XNAT.
 #### 2.0.0 - New Features
 * The ID token received at interactive login is now validated: signature against `jwksUri`, `iss` against `issuer`, and expiry. This is on by default for providers with both properties set. Providers without them log a warning at startup and are not validated, unless `idToken.validate.enabled=true`, in which case XNAT fails to start. Controlled per provider by `openid.<providerId>.idToken.validate.enabled`.
     * `openid.<providerId>.idToken.issuer` sets the `iss` expected in ID tokens when it differs from the one in access tokens. Defaults to `issuer`.
+* Added `openid.<providerId>.session.onInvalid` for the auto-login provider. Set to `reauth`, a page load carrying an XNAT session cookie XNAT no longer recognises (after the session lapsed, or XNAT restarted) signs in again through auto-login and returns to the requested page, instead of going through logout. A form submitted with a lapsed session returns to the form's page the same way; the submission itself is lost. With a `logoutUri` that ends the SSO session, logout signed the user out of every application on the provider. Defaults to `logout`, the previous behaviour.
 
 #### 2.0.0 - Fixes
 * A user who follows a link into XNAT while signed out now lands on the requested page after signing in through OpenID, by auto-login or a "Sign in with ..." link, instead of on `Index.vm`. Starting the OpenID flow discarded the session that held the requested page.
