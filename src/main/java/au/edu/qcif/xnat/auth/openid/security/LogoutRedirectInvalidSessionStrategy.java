@@ -19,6 +19,9 @@ import java.io.IOException;
  * <p>Interactive (browser) requests are routed to XNAT's logout so the timeout behaves like clicking Logout
  * (unified up to {@code logoutUri}, or local). Non-interactive requests (e.g. a REST client carrying only a
  * stale session cookie) get a 401 instead of a redirect.</p>
+ *
+ * <p>With {@code session.onInvalid=reauth}, {@link ReauthInvalidSessionStrategy} takes page loads and form
+ * submissions instead, and only the requests it passes on reach this strategy.</p>
  */
 @Slf4j
 public class LogoutRedirectInvalidSessionStrategy implements InvalidSessionStrategy {
