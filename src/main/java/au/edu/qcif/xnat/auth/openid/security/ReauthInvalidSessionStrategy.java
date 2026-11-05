@@ -2,6 +2,8 @@ package au.edu.qcif.xnat.auth.openid.security;
 
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
+import org.nrg.xdat.XDAT;
+import org.nrg.xnat.utils.InteractiveAgentDetector;
 import org.springframework.security.web.session.InvalidSessionStrategy;
 
 import javax.servlet.http.HttpServletRequest;
@@ -24,17 +26,25 @@ import static au.edu.qcif.xnat.auth.openid.etc.Navigations.isNavigation;
  * submission can't be kept (its CSRF token belonged to the old session), so it is redirected to the page it was
  * submitted from, or to the site root without a same-origin {@code Referer}.</p>
  *
- * <p>Any other request (XHR, {@code fetch}, an API client) gets a 401 and nothing else. It must not go through logout:
- * the stale cookie may be one that another window's sign-in has just replaced, and by the time a redirect to logout is
- * followed, the browser sends the new cookie, so the logout would end the session that window just created.</p>
+ * <p>Any other browser request (XHR, {@code fetch}, a stylesheet) is sent to the login page, as XNAT sends any signed-out
+ * page script, and an API client gets a 401. Neither goes through logout: the stale cookie may be one that another
+ * window's sign-in has just replaced, and by the time a redirect to logout is followed, the browser sends the new
+ * cookie, so the logout would end the session that window just created. A browser gets no 401 because a proxy in front
+ * may answer a 401 with its own sign-in page, ending the user's session there.</p>
  */
 @Slf4j
 public class ReauthInvalidSessionStrategy implements InvalidSessionStrategy {
 
+    private static final String XNAT_LOGIN_PATH = "/app/template/Login.vm";
+
     @Override
     public void onInvalidSessionDetected(final HttpServletRequest request, final HttpServletResponse response) throws IOException {
         if (!isNavigation(request)) {
-            response.sendError(HttpServletResponse.SC_UNAUTHORIZED);
+            if (LogoutRedirectInvalidSessionStrategy.isInteractive(request, resolveDetector())) {
+                response.sendRedirect(request.getContextPath() + XNAT_LOGIN_PATH);
+            } else {
+                response.sendError(HttpServletResponse.SC_UNAUTHORIZED);
+            }
             return;
         }
         final String target = target(request);
@@ -43,6 +53,11 @@ public class ReauthInvalidSessionStrategy implements InvalidSessionStrategy {
         request.getSession(true);
         response.setStatus(HttpServletResponse.SC_SEE_OTHER);
         response.setHeader("Location", target);
+    }
+
+    /** XNAT's interactive-agent detector, or {@code null} if unavailable; isolated so tests can supply one. */
+    InteractiveAgentDetector resolveDetector() {
+        return XDAT.getContextService().getBeanSafely(InteractiveAgentDetector.class);
     }
 
     /** The URL to sign in again at: the requested one for a GET, otherwise the form's page or the site root. */

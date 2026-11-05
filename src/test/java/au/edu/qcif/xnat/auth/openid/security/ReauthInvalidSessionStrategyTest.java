@@ -1,17 +1,33 @@
 package au.edu.qcif.xnat.auth.openid.security;
 
 import org.junit.Test;
+import org.nrg.xnat.utils.InteractiveAgentDetector;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 public class ReauthInvalidSessionStrategyTest {
 
-    private final ReauthInvalidSessionStrategy strategy = new ReauthInvalidSessionStrategy();
-    private final MockHttpServletResponse      response = new MockHttpServletResponse();
+    private final MockHttpServletResponse response = new MockHttpServletResponse();
+    private       InteractiveAgentDetector detector = browserDetector(true);
+
+    private final ReauthInvalidSessionStrategy strategy = new ReauthInvalidSessionStrategy() {
+        @Override InteractiveAgentDetector resolveDetector() { return detector; }
+    };
+
+    /** XNAT's detector for a request on a data path, from a browser or not. */
+    private static InteractiveAgentDetector browserDetector(final boolean interactive) {
+        final InteractiveAgentDetector detector = mock(InteractiveAgentDetector.class);
+        when(detector.isDataPath(any())).thenReturn(true);
+        when(detector.isInteractiveAgent(any())).thenReturn(interactive);
+        return detector;
+    }
 
     private static MockHttpServletRequest get(final String uri) {
         final MockHttpServletRequest request = new MockHttpServletRequest("GET", uri);
@@ -33,10 +49,16 @@ public class ReauthInvalidSessionStrategyTest {
         return request;
     }
 
+    private void assertSentToLoginPage(final MockHttpServletRequest request) {
+        assertEquals(302, response.getStatus());
+        assertEquals("/app/template/Login.vm", response.getRedirectedUrl());
+        // No new session: the browser's cookie may already belong to another window's fresh sign-in.
+        assertNull(request.getSession(false));
+    }
+
     private void assertUnauthorizedOnly(final MockHttpServletRequest request) {
         assertEquals(401, response.getStatus());
         assertNull(response.getRedirectedUrl());
-        // No new session: the browser's cookie may already belong to another window's fresh sign-in.
         assertNull(request.getSession(false));
     }
 
@@ -63,17 +85,19 @@ public class ReauthInvalidSessionStrategyTest {
     }
 
     @Test
-    public void xhrGetsUnauthorizedAndNoLogout() throws Exception {
+    public void xhrGoesToTheLoginPageWithoutLogoutOr401() throws Exception {
+        // A 401 to a browser may be answered by a proxy in front with its own sign-in page, ending the session there.
         final MockHttpServletRequest request = get("/xapi/users");
         request.addHeader("Sec-Fetch-Mode", "cors");
 
         strategy.onInvalidSessionDetected(request, response);
 
-        assertUnauthorizedOnly(request);
+        assertSentToLoginPage(request);
     }
 
     @Test
     public void apiClientGetsUnauthorized() throws Exception {
+        detector = browserDetector(false);
         final MockHttpServletRequest request = get("/data/projects");
         request.addHeader("Accept", "application/json");
 
@@ -83,7 +107,7 @@ public class ReauthInvalidSessionStrategyTest {
     }
 
     @Test
-    public void framedPageLoadGetsUnauthorized() throws Exception {
+    public void framedPageLoadGoesToTheLoginPage() throws Exception {
         // The provider usually refuses to be framed, so sign-in can't complete inside an iframe.
         final MockHttpServletRequest request = get("/app/template/Page.vm");
         request.addHeader("Sec-Fetch-Mode", "navigate");
@@ -91,7 +115,7 @@ public class ReauthInvalidSessionStrategyTest {
 
         strategy.onInvalidSessionDetected(request, response);
 
-        assertUnauthorizedOnly(request);
+        assertSentToLoginPage(request);
     }
 
     @Test
@@ -166,10 +190,21 @@ public class ReauthInvalidSessionStrategyTest {
     }
 
     @Test
-    public void withoutFetchMetadataAnXhrAskingForHtmlGetsUnauthorized() throws Exception {
+    public void withoutFetchMetadataAnXhrAskingForHtmlGoesToTheLoginPage() throws Exception {
         final MockHttpServletRequest request = get("/app/template/DataTypeSearch.vm");
         request.addHeader("Accept", "text/html, */*");
         request.addHeader("X-Requested-With", "XMLHttpRequest");
+
+        strategy.onInvalidSessionDetected(request, response);
+
+        assertSentToLoginPage(request);
+    }
+
+    @Test
+    public void withoutTheDetectorARequestNotAskingForHtmlGetsUnauthorized() throws Exception {
+        detector = null;
+        final MockHttpServletRequest request = get("/data/projects");
+        request.addHeader("Accept", "application/json");
 
         strategy.onInvalidSessionDetected(request, response);
 
