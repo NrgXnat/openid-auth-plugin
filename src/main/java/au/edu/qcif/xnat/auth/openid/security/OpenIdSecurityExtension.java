@@ -96,7 +96,7 @@ public class OpenIdSecurityExtension extends BaseXnatSecurityExtension {
         switch (onInvalid) {
             case "reauth":
                 log.debug("Expired sessions on page loads sign in again through provider '{}'", providerId);
-                return new ReauthInvalidSessionStrategy(new LogoutRedirectInvalidSessionStrategy());
+                return new ReauthInvalidSessionStrategy();
             case "logout":
                 return new LogoutRedirectInvalidSessionStrategy();
             default:

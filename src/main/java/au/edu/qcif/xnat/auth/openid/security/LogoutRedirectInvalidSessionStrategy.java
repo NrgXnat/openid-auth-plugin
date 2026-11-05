@@ -20,8 +20,8 @@ import java.io.IOException;
  * (unified up to {@code logoutUri}, or local). Non-interactive requests (e.g. a REST client carrying only a
  * stale session cookie) get a 401 instead of a redirect.</p>
  *
- * <p>With {@code session.onInvalid=reauth}, {@link ReauthInvalidSessionStrategy} takes page loads and form
- * submissions instead, and only the requests it passes on reach this strategy.</p>
+ * <p>Installed for {@code session.onInvalid=logout}, the default; {@code reauth} installs
+ * {@link ReauthInvalidSessionStrategy} instead.</p>
  */
 @Slf4j
 public class LogoutRedirectInvalidSessionStrategy implements InvalidSessionStrategy {

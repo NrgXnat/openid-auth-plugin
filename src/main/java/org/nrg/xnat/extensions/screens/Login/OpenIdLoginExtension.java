@@ -3,6 +3,7 @@ package org.nrg.xnat.extensions.screens.Login;
 import static au.edu.qcif.xnat.auth.openid.OpenIdConnectFilter.AUTO_LOGIN_ATTEMPTED_COOKIE;
 import static au.edu.qcif.xnat.auth.openid.OpenIdConnectFilter.AUTO_LOGIN_SUPPRESS_COOKIE;
 import static au.edu.qcif.xnat.auth.openid.OpenIdConnectFilter.OPENID_ERROR_MESSAGE;
+import static au.edu.qcif.xnat.auth.openid.etc.Navigations.isNavigation;
 
 import au.edu.qcif.xnat.auth.openid.OpenIdAuthPlugin;
 import lombok.extern.slf4j.Slf4j;
@@ -32,7 +33,7 @@ import java.util.Map;
  * <ol>
  *     <li>Displays a pending OpenID authentication error message on the login page, if there is one.</li>
  *     <li>Otherwise, when a provider opts into it ({@code openid.<providerId>.autoLogin=true}), automatically
- *     redirects an unauthenticated visitor into the OpenID flow with {@code prompt=none}. If the user already
+ *     redirects an unauthenticated visitor's page load into the OpenID flow with {@code prompt=none}. If the user already
  *     has a session at the provider they are logged straight in; if not, the provider returns an error and the
  *     filter brings them back to this page — which then renders normally.</li>
  * </ol>
@@ -119,6 +120,12 @@ public class OpenIdLoginExtension implements Reflection.InjectableI {
         }
         final String providerId = plugin == null ? null : plugin.getAutoLoginProviderId();
         if (StringUtils.isBlank(providerId)) {
+            return;
+        }
+        // XNAT also sends a signed-out page script's XHR here. It can't follow the redirect to the provider, and
+        // setting the guard cookie for it would keep auto-login off for the user's next page load.
+        final HttpServletRequest request = data.getRequest();
+        if (request == null || !isNavigation(request)) {
             return;
         }
 

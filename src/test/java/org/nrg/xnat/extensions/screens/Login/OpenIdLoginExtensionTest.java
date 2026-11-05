@@ -83,6 +83,7 @@ public class OpenIdLoginExtensionTest {
         when(data.getRequest()).thenReturn(request);
         when(guestUser.isGuest()).thenReturn(true);
         when(plugin.getAutoLoginProviderId()).thenReturn("keycloak");
+        when(request.getHeader("Sec-Fetch-Mode")).thenReturn("navigate");
 
         extension.handle(data, guestUser, plugin);
 
@@ -96,6 +97,23 @@ public class OpenIdLoginExtensionTest {
 
         verify(response).sendRedirect(SERVER + "/openid-login?providerId=keycloak&prompt=none");
         verify(data, never()).setMessage(anyString());
+    }
+
+    @Test
+    public void doesNotRedirectOrSetGuardCookieForAPageScript() throws Exception {
+        // XNAT redirects a signed-out XHR to the login page. It can't follow the redirect to the provider, and the
+        // guard cookie would keep auto-login off for the user's next page load.
+        when(data.getSession()).thenReturn(session);
+        when(data.getResponse()).thenReturn(response);
+        when(data.getRequest()).thenReturn(request);
+        when(guestUser.isGuest()).thenReturn(true);
+        when(plugin.getAutoLoginProviderId()).thenReturn("keycloak");
+        when(request.getHeader("Sec-Fetch-Mode")).thenReturn("cors");
+
+        extension.handle(data, guestUser, plugin);
+
+        verify(response, never()).sendRedirect(anyString());
+        verify(response, never()).addCookie(any(Cookie.class));
     }
 
     @Test
