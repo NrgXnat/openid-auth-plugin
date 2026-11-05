@@ -198,6 +198,24 @@ public class OpenIdConnectFilterLogicTest {
     }
 
     @Test
+    public void markingAnAttemptSetsAShortLivedGuardCookie() {
+        final HttpServletRequest request = mock(HttpServletRequest.class);
+        final HttpServletResponse response = mock(HttpServletResponse.class);
+        when(request.isSecure()).thenReturn(true);
+
+        OpenIdConnectFilter.markAutoLoginAttempted(request, response);
+
+        final ArgumentCaptor<Cookie> captor = ArgumentCaptor.forClass(Cookie.class);
+        verify(response).addCookie(captor.capture());
+        final Cookie guard = captor.getValue();
+        assertEquals(OpenIdConnectFilter.AUTO_LOGIN_ATTEMPTED_COOKIE, guard.getName());
+        assertEquals(120, guard.getMaxAge());
+        assertEquals("/", guard.getPath());
+        assertTrue("guard cookie must be HttpOnly", guard.isHttpOnly());
+        assertTrue(guard.getSecure());
+    }
+
+    @Test
     public void clearAutoLoginCookiesIsNoOpWhenAbsent() {
         final HttpServletRequest request = mock(HttpServletRequest.class);
         final HttpServletResponse response = mock(HttpServletResponse.class);

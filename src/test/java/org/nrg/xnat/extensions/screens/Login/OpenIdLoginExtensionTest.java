@@ -87,14 +87,9 @@ public class OpenIdLoginExtensionTest {
 
         extension.handle(data, guestUser, plugin);
 
-        // A short-lived, one-shot guard cookie is set so a failed auto-login attempt cannot loop.
-        final ArgumentCaptor<Cookie> cookieCaptor = ArgumentCaptor.forClass(Cookie.class);
-        verify(response).addCookie(cookieCaptor.capture());
-        final Cookie guard = cookieCaptor.getValue();
-        assertEquals(AUTO_LOGIN_ATTEMPTED_COOKIE, guard.getName());
-        assertEquals(120, guard.getMaxAge());
-        assertTrue("guard cookie must be HttpOnly", guard.isHttpOnly());
-
+        // The guard cookie is set only if the attempt comes back without signing in (OpenIdConnectFilter), so
+        // another window's attempt still in flight doesn't block this one.
+        verify(response, never()).addCookie(any(Cookie.class));
         verify(response).sendRedirect(SERVER + "/openid-login?providerId=keycloak&prompt=none");
         verify(data, never()).setMessage(anyString());
     }

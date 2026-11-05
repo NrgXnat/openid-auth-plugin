@@ -41,13 +41,6 @@ import java.util.Map;
 @Slf4j
 public class OpenIdLoginExtension implements Reflection.InjectableI {
 
-    /**
-     * Lifetime of the one-shot auto-login guard cookie, in seconds. Long enough to break the
-     * {@code Login.vm -> provider -> callback -> Login.vm} redirect chain, short enough that a later visit
-     * retries — so a visitor who signs in at the provider in the meantime is still picked up automatically.
-     */
-    private static final int AUTO_LOGIN_COOKIE_MAX_AGE_SECONDS = 120;
-
     @Override
     public void execute(Map<String, Object> params) {
         final RunData data = (RunData) params.get("data");
@@ -108,9 +101,7 @@ public class OpenIdLoginExtension implements Reflection.InjectableI {
         if (currentUser != null && !currentUser.isGuest()) {
             return;
         }
-        // One-shot guard: a short-lived cookie set when the last auto-login was issued. It is a cookie rather
-        // than a session attribute because it must survive the Login.vm -> /openid-login -> provider ->
-        // callback redirect chain, across which the HttpSession does not reliably persist.
+        // A recent sign-in attempt came back without signing the user in (see AUTO_LOGIN_ATTEMPTED_COOKIE).
         if (hasAutoLoginAttemptCookie(data)) {
             return;
         }
@@ -122,21 +113,19 @@ public class OpenIdLoginExtension implements Reflection.InjectableI {
         if (StringUtils.isBlank(providerId)) {
             return;
         }
-        // XNAT also sends a signed-out page script's XHR here. It can't follow the redirect to the provider, and
-        // setting the guard cookie for it would keep auto-login off for the user's next page load.
+        // XNAT also sends a signed-out page script's XHR here, and it can't follow the redirect to the provider.
         final HttpServletRequest request = data.getRequest();
         if (request == null || !isNavigation(request)) {
             return;
         }
 
-        setAutoLoginAttemptCookie(data);
         final String target = fullServerPath() + "/openid-login?providerId="
                 + URLEncoder.encode(providerId, StandardCharsets.UTF_8.name()) + "&prompt=none";
         log.debug("Attempting OpenID auto-login via provider '{}'", providerId);
         response.sendRedirect(target);
     }
 
-    /** True if the one-shot auto-login guard cookie is present on the request. */
+    /** True if the auto-login guard cookie is present on the request. */
     private static boolean hasAutoLoginAttemptCookie(final RunData data) {
         return hasNamedCookie(data, AUTO_LOGIN_ATTEMPTED_COOKIE);
     }
@@ -157,17 +146,6 @@ public class OpenIdLoginExtension implements Reflection.InjectableI {
             }
         }
         return false;
-    }
-
-    /** Sets the short-lived, one-shot guard cookie marking that an auto-login has just been attempted. */
-    private void setAutoLoginAttemptCookie(final RunData data) {
-        final HttpServletRequest request = data.getRequest();
-        final Cookie cookie = new Cookie(AUTO_LOGIN_ATTEMPTED_COOKIE, "1");
-        cookie.setPath("/");
-        cookie.setHttpOnly(true);
-        cookie.setSecure(request != null && request.isSecure());
-        cookie.setMaxAge(AUTO_LOGIN_COOKIE_MAX_AGE_SECONDS);
-        data.getResponse().addCookie(cookie);
     }
 
     /** The site's full server path; isolated here so tests can override it without the static XNAT dependency. */
