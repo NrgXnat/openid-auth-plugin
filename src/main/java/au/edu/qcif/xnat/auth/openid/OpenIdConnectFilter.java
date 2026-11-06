@@ -362,7 +362,7 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter
             log.info("User {} is not verified, redirecting to verification page.", xdatUser.getUsername());
             String encodedEmail = URLEncoder.encode(xdatUser.getEmail(), StandardCharsets.UTF_8.toString());
             String encodedUsername = URLEncoder.encode(xdatUser.getUsername(), StandardCharsets.UTF_8.toString());
-            response.sendRedirect(TurbineUtils.GetFullServerPath() + "/app/template/VerificationSent.vm" +
+            response.sendRedirect(fullServerPath() + "/app/template/VerificationSent.vm" +
                     "?emailTo=" + encodedEmail + "&emailUsername=" + encodedUsername);
             return null;
         }
@@ -420,7 +420,7 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter
         request.getSession().setAttribute(OPENID_ERROR_MESSAGE, userMessage);
 
         // Redirect to the login page
-        response.sendRedirect(TurbineUtils.GetFullServerPath() + "/app/template/Login.vm");
+        response.sendRedirect(fullServerPath() + "/app/template/Login.vm");
     }
 
     private static String getUserMessage(final AuthenticationException failed) {
@@ -454,7 +454,7 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter
         if (isInteractionRequiredError(error)) {
             log.debug("OpenID auto-login returned '{}'; showing the login page.", error);
             markAutoLoginAttempted(request, response);
-            response.sendRedirect(TurbineUtils.GetFullServerPath() + "/app/template/Login.vm");
+            response.sendRedirect(fullServerPath() + "/app/template/Login.vm");
             return null;
         }
         log.info("OpenID provider returned an authorization error: {}", error);
@@ -467,6 +467,11 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter
                 || "interaction_required".equals(error)
                 || "consent_required".equals(error)
                 || "account_selection_required".equals(error);
+    }
+
+    /** The site's full server path; isolated here so tests can override it without the static XNAT dependency. */
+    String fullServerPath() {
+        return TurbineUtils.GetFullServerPath();
     }
 
     /** Sets the {@link #AUTO_LOGIN_ATTEMPTED_COOKIE} guard, keeping auto-login off for a short while. */
@@ -553,7 +558,7 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter
         request.getSession().setAttribute(UsernameAuthMappingNotFoundException.class.getSimpleName(),
                 new UsernameAuthMappingNotFoundException(notFound.getUsername(), notFound.getAuthMethod(),
                         notFound.getAuthMethodId(), user.getEmail(), user.getLastname(), user.getFirstname()));
-        response.sendRedirect(TurbineUtils.GetFullServerPath() + "/app/template/RegisterExternalLogin.vm");
+        response.sendRedirect(fullServerPath() + "/app/template/RegisterExternalLogin.vm");
         return null;
     }
 

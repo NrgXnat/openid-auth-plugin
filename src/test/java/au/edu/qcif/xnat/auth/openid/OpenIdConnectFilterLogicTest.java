@@ -48,6 +48,7 @@ import static org.mockito.Mockito.when;
 public class OpenIdConnectFilterLogicTest {
 
     private static final String PROVIDER = "keycloak";
+    private static final String SERVER   = "https://xnat.example";
 
     @Mock private OpenIdAuthPlugin               plugin;
     @Mock private AuthenticationEventPublisher   eventPublisher;
@@ -66,6 +67,16 @@ public class OpenIdConnectFilterLogicTest {
         lenient().when(plugin.getEnabledProviders()).thenReturn(Collections.singletonList(PROVIDER));
         providerProps.forEach((key, value) -> lenient().when(plugin.getProperty(PROVIDER, key)).thenReturn(value));
         return new OpenIdConnectFilter(plugin, eventPublisher, userAuthService, siteConfigPreferences, keystoreService, new JwtValidatorRegistry(plugin), Runnable::run);
+    }
+
+    /** A filter with no provider properties whose server path doesn't need XNAT's static lookup. */
+    private OpenIdConnectFilter filterWithServerPath() {
+        lenient().when(plugin.getRedirectUri()).thenReturn("/openid/callback");
+        lenient().when(plugin.getProps()).thenReturn(new Properties());
+        lenient().when(plugin.getEnabledProviders()).thenReturn(Collections.singletonList(PROVIDER));
+        return new OpenIdConnectFilter(plugin, eventPublisher, userAuthService, siteConfigPreferences, keystoreService, new JwtValidatorRegistry(plugin), Runnable::run) {
+            @Override String fullServerPath() { return SERVER; }
+        };
     }
 
     private static boolean isIdTokenEncrypted(final OpenIdConnectFilter filter, final String idToken) throws Exception {
@@ -146,6 +157,35 @@ public class OpenIdConnectFilterLogicTest {
         // A non-interaction-required error (e.g. access_denied) is a genuine credential failure, not an
         // expected auto-login fallback, so it surfaces as an exception.
         filter.attemptAuthentication(request, response);
+    }
+
+    @Test
+    public void interactionRequiredErrorSetsTheGuardCookieAndShowsTheLoginPage() throws Exception {
+        final OpenIdConnectFilter filter = filterWithServerPath();
+        final MockHttpServletRequest request = new MockHttpServletRequest("GET", "/openid-login");
+        request.setParameter("error", "login_required");
+        final MockHttpServletResponse response = new MockHttpServletResponse();
+
+        assertNull(filter.attemptAuthentication(request, response));
+
+        // Without the guard the login page would start auto-login again and loop.
+        final Cookie guard = response.getCookie(OpenIdConnectFilter.AUTO_LOGIN_ATTEMPTED_COOKIE);
+        assertNotNull(guard);
+        assertEquals(120, guard.getMaxAge());
+        assertEquals(SERVER + "/app/template/Login.vm", response.getRedirectedUrl());
+    }
+
+    @Test
+    public void failedSignInSetsTheGuardCookie() throws Exception {
+        // A failure after the provider signed the user in would repeat silently through auto-login without it.
+        final OpenIdConnectFilter filter = filterWithServerPath();
+        final MockHttpServletRequest request = new MockHttpServletRequest("GET", "/openid-login");
+        final MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.unsuccessfulAuthentication(request, response, new BadCredentialsException("Could not obtain access token"));
+
+        assertNotNull(response.getCookie(OpenIdConnectFilter.AUTO_LOGIN_ATTEMPTED_COOKIE));
+        assertEquals(SERVER + "/app/template/Login.vm", response.getRedirectedUrl());
     }
 
     // ---- provider resolution on the callback ---------------------------------------------------
