@@ -62,12 +62,19 @@ public class ReauthInvalidSessionStrategy implements InvalidSessionStrategy {
 
     /** The URL to sign in again at: the requested one for a GET, otherwise the form's page or the site root. */
     private static String target(final HttpServletRequest request) {
+        final String root = request.getContextPath() + "/";
         if ("GET".equals(request.getMethod())) {
+            final String uri = request.getRequestURI();
             final String query = request.getQueryString();
-            return request.getRequestURI() + (query != null ? "?" + query : "");
+            return isLocalPath(uri) ? uri + (query != null ? "?" + query : "") : root;
         }
         final String referer = sameOriginReferer(request);
-        return referer != null ? referer : request.getContextPath() + "/";
+        return referer != null ? referer : root;
+    }
+
+    /** False for a path a browser would read as another host: {@code //host/...}, or {@code /\host/...} in some browsers. */
+    private static boolean isLocalPath(final String path) {
+        return path.startsWith("/") && !path.startsWith("//") && !path.startsWith("/\\");
     }
 
     /**
@@ -90,7 +97,7 @@ public class ReauthInvalidSessionStrategy implements InvalidSessionStrategy {
         final boolean sameOrigin = site != null ? "same-origin".equals(site) : StringUtils.equalsIgnoreCase(uri.getHost(), request.getServerName());
         final String path = uri.getRawPath();
         final String contextPath = request.getContextPath();
-        if (!sameOrigin || path == null || !(path.equals(contextPath) || path.startsWith(contextPath + "/"))) {
+        if (!sameOrigin || path == null || !isLocalPath(path) || !(path.equals(contextPath) || path.startsWith(contextPath + "/"))) {
             return null;
         }
         return path + (uri.getRawQuery() != null ? "?" + uri.getRawQuery() : "");

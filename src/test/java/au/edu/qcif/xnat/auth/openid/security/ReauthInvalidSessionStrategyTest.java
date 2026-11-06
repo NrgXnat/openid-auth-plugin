@@ -180,6 +180,42 @@ public class ReauthInvalidSessionStrategyTest {
     }
 
     @Test
+    public void refererPathABrowserWouldReadAsAnotherHostGoesToTheSiteRoot() throws Exception {
+        // A Location of //evil.example/x sends the browser to evil.example.
+        final MockHttpServletRequest request = post("/app/action/ModifyItem");
+        request.addHeader("Sec-Fetch-Site", "same-origin");
+        request.addHeader("Referer", "https://xnat.example.org//evil.example/x");
+
+        strategy.onInvalidSessionDetected(request, response);
+
+        assertEquals("/", response.getRedirectedUrl());
+    }
+
+    @Test
+    public void withoutFetchMetadataARefererPathReadAsAnotherHostGoesToTheSiteRoot() throws Exception {
+        final MockHttpServletRequest request = new MockHttpServletRequest("POST", "/app/action/ModifyItem");
+        request.setServerName("xnat.example.org");
+        request.addHeader("Accept", "text/html");
+        request.addHeader("Referer", "https://xnat.example.org//evil.example/x");
+
+        strategy.onInvalidSessionDetected(request, response);
+
+        assertEquals("/", response.getRedirectedUrl());
+    }
+
+    @Test
+    public void pageLoadForAPathReadAsAnotherHostGoesToTheSiteRoot() throws Exception {
+        // XNAT's request firewall normally rejects these before this strategy runs.
+        for (final String uri : new String[]{"//evil.example/x", "/\\evil.example/x"}) {
+            final MockHttpServletResponse pageResponse = new MockHttpServletResponse();
+
+            strategy.onInvalidSessionDetected(navigation(uri), pageResponse);
+
+            assertEquals(uri, "/", pageResponse.getRedirectedUrl());
+        }
+    }
+
+    @Test
     public void withoutFetchMetadataAnHtmlRequestIsAPageLoad() throws Exception {
         final MockHttpServletRequest request = get("/app/template/Index.vm");
         request.addHeader("Accept", "text/html,application/xhtml+xml");
