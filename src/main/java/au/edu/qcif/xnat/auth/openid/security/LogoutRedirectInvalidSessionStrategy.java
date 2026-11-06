@@ -19,6 +19,9 @@ import java.io.IOException;
  * <p>Interactive (browser) requests are routed to XNAT's logout so the timeout behaves like clicking Logout
  * (unified up to {@code logoutUri}, or local). Non-interactive requests (e.g. a REST client carrying only a
  * stale session cookie) get a 401 instead of a redirect.</p>
+ *
+ * <p>Installed for {@code session.onInvalid=logout}, the default; {@code reauth} installs
+ * {@link ReauthInvalidSessionStrategy} instead.</p>
  */
 @Slf4j
 public class LogoutRedirectInvalidSessionStrategy implements InvalidSessionStrategy {
@@ -27,7 +30,7 @@ public class LogoutRedirectInvalidSessionStrategy implements InvalidSessionStrat
 
     @Override
     public void onInvalidSessionDetected(final HttpServletRequest request, final HttpServletResponse response) throws IOException {
-        if (isInteractive(request)) {
+        if (isInteractive(request, resolveDetector())) {
             log.debug("Expired session on an interactive request; routing to logout");
             response.sendRedirect(request.getContextPath() + XNAT_LOGOUT_PATH);
         } else {
@@ -41,8 +44,7 @@ public class LogoutRedirectInvalidSessionStrategy implements InvalidSessionStrat
      * being misread as an API client. Mirrors the entry point: only a non-interactive agent on a data path is
      * treated as API. Falls back to an Accept-header check if the detector bean can't be resolved.
      */
-    private boolean isInteractive(final HttpServletRequest request) {
-        final InteractiveAgentDetector detector = resolveDetector();
+    static boolean isInteractive(final HttpServletRequest request, final InteractiveAgentDetector detector) {
         if (detector != null) {
             return !(detector.isDataPath(request) && !detector.isInteractiveAgent(request));
         }

@@ -83,19 +83,32 @@ public class OpenIdLoginExtensionTest {
         when(data.getRequest()).thenReturn(request);
         when(guestUser.isGuest()).thenReturn(true);
         when(plugin.getAutoLoginProviderId()).thenReturn("keycloak");
+        when(request.getHeader("Sec-Fetch-Mode")).thenReturn("navigate");
 
         extension.handle(data, guestUser, plugin);
 
-        // A short-lived, one-shot guard cookie is set so a failed auto-login attempt cannot loop.
-        final ArgumentCaptor<Cookie> cookieCaptor = ArgumentCaptor.forClass(Cookie.class);
-        verify(response).addCookie(cookieCaptor.capture());
-        final Cookie guard = cookieCaptor.getValue();
-        assertEquals(AUTO_LOGIN_ATTEMPTED_COOKIE, guard.getName());
-        assertEquals(120, guard.getMaxAge());
-        assertTrue("guard cookie must be HttpOnly", guard.isHttpOnly());
-
+        // The guard cookie is set only if the attempt comes back without signing in (OpenIdConnectFilter), so
+        // another window's attempt still in flight doesn't block this one.
+        verify(response, never()).addCookie(any(Cookie.class));
         verify(response).sendRedirect(SERVER + "/openid-login?providerId=keycloak&prompt=none");
         verify(data, never()).setMessage(anyString());
+    }
+
+    @Test
+    public void doesNotRedirectOrSetGuardCookieForAPageScript() throws Exception {
+        // XNAT redirects a signed-out XHR to the login page. It can't follow the redirect to the provider, and the
+        // guard cookie would keep auto-login off for the user's next page load.
+        when(data.getSession()).thenReturn(session);
+        when(data.getResponse()).thenReturn(response);
+        when(data.getRequest()).thenReturn(request);
+        when(guestUser.isGuest()).thenReturn(true);
+        when(plugin.getAutoLoginProviderId()).thenReturn("keycloak");
+        when(request.getHeader("Sec-Fetch-Mode")).thenReturn("cors");
+
+        extension.handle(data, guestUser, plugin);
+
+        verify(response, never()).sendRedirect(anyString());
+        verify(response, never()).addCookie(any(Cookie.class));
     }
 
     @Test

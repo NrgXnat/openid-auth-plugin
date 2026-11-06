@@ -17,8 +17,8 @@ import java.nio.charset.StandardCharsets;
  * back to the XNAT login page. Installed only when the auto-login provider configures {@code logoutUri}.
  *
  * <p>Sends {@code id_token_hint} (captured by {@link OpenIdLogoutHandler} before the session was invalidated)
- * when available, plus {@code client_id} and {@code post_logout_redirect_uri}. On an idle timeout the id_token
- * is already gone, so the request is a best-effort logout without the hint: a proxy-style {@code logoutUri}
+ * when available, plus {@code client_id} and {@code post_logout_redirect_uri}. When an idle timeout is routed
+ * to logout ({@code session.onInvalid=logout}, the default) the id_token is already gone, so the request is a best-effort logout without the hint: a proxy-style {@code logoutUri}
  * (e.g. oauth2-proxy sign-out) logs out anyway, while a provider end-session endpoint that requires the hint
  * (e.g. Keycloak) will prompt the user to confirm. The provider must permit the post-logout redirect URI, so
  * register the XNAT login URL as an allowed post-logout redirect on the client.</p>

@@ -9,9 +9,11 @@ import org.nrg.xnat.security.BaseXnatSecurityExtension;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.oauth2.client.filter.OAuth2ClientContextFilter;
 import org.springframework.security.web.authentication.preauth.AbstractPreAuthenticatedProcessingFilter;
+import org.springframework.security.web.session.InvalidSessionStrategy;
 import org.springframework.stereotype.Component;
 
 import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.LOGOUT_URI;
+import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.SESSION_ON_INVALID;
 import static org.nrg.xdat.services.XdatUserAuthService.OPENID;
 
 @Slf4j
@@ -58,9 +60,10 @@ public class OpenIdSecurityExtension extends BaseXnatSecurityExtension {
      * {@code autoLogin} enabled). Installs {@link OpenIdLogoutHandler} (the cookie safety net + id_token
      * capture that stops a logout from immediately bouncing the user back in), and — because an idle timeout
      * would otherwise be undone by an automatic re-login — a {@link LogoutRedirectInvalidSessionStrategy} that
-     * routes an expired-session request to logout. When the provider also sets {@code logoutUri}, logout (and
-     * hence timeout) performs RP-Initiated Logout to end the provider (SSO) session — the platform-standard
-     * behaviour.
+     * routes an expired-session request to logout, or with {@code session.onInvalid=reauth} a
+     * {@link ReauthInvalidSessionStrategy} that sends page loads back through auto-login instead. When the provider
+     * also sets {@code logoutUri}, logout (and hence timeout) performs RP-Initiated Logout to end the provider (SSO)
+     * session — the platform-standard behaviour.
      */
     private void configureLogoutAndTimeout(final HttpSecurity http) throws Exception {
         final String autoLoginProvider = openIdAuthPlugin.getAutoLoginProviderId();
@@ -73,14 +76,32 @@ public class OpenIdSecurityExtension extends BaseXnatSecurityExtension {
 
         // An idle "auto-logout" arrives as a request with an expired session id. Spring Security detects it on
         // the original request (before XNAT recreates a session for the login redirect, which is why the login
-        // screen is too late) and this strategy routes it to logout instead of an automatic re-login.
-        http.sessionManagement().invalidSessionStrategy(new LogoutRedirectInvalidSessionStrategy());
+        // screen is too late) and this strategy decides between logout and signing in again.
+        http.sessionManagement().invalidSessionStrategy(invalidSessionStrategy(autoLoginProvider));
 
         final String endSessionUri = openIdAuthPlugin.getProperty(autoLoginProvider, LOGOUT_URI);
         if (StringUtils.isNotBlank(endSessionUri)) {
             final String clientId = openIdAuthPlugin.getProperty(autoLoginProvider, "clientId");
             http.logout().logoutSuccessHandler(new RpInitiatedLogoutSuccessHandler(endSessionUri, clientId));
             log.debug("RP-initiated logout enabled for provider '{}'", autoLoginProvider);
+        }
+    }
+
+    /**
+     * {@code logout} (the default) treats an unrecognised session as a timeout to enforce; {@code reauth} hands page
+     * loads back to auto-login, for a deployment where the provider session decides whether the user is signed in.
+     */
+    private InvalidSessionStrategy invalidSessionStrategy(final String providerId) {
+        final String onInvalid = StringUtils.defaultIfBlank(openIdAuthPlugin.getProperty(providerId, SESSION_ON_INVALID), "logout").trim();
+        switch (onInvalid) {
+            case "reauth":
+                log.debug("Expired sessions on page loads sign in again through provider '{}'", providerId);
+                return new ReauthInvalidSessionStrategy();
+            case "logout":
+                return new LogoutRedirectInvalidSessionStrategy();
+            default:
+                log.warn("Unknown {} '{}' for provider '{}'; using 'logout'", SESSION_ON_INVALID, onInvalid, providerId);
+                return new LogoutRedirectInvalidSessionStrategy();
         }
     }
 
