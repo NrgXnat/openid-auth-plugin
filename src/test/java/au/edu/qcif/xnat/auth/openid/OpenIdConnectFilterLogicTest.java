@@ -17,10 +17,12 @@ import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.authentication.CredentialsExpiredException;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.oauth2.client.OAuth2RestTemplate;
+import org.springframework.security.oauth2.common.DefaultOAuth2AccessToken;
 import org.springframework.security.oauth2.client.resource.UserRedirectRequiredException;
 import org.springframework.security.web.authentication.AuthenticationSuccessHandler;
 import org.springframework.security.web.savedrequest.HttpSessionRequestCache;
 import org.springframework.security.web.savedrequest.SavedRequest;
+import org.springframework.web.client.ResourceAccessException;
 
 import javax.servlet.http.Cookie;
 import javax.servlet.http.HttpServletRequest;
@@ -173,6 +175,59 @@ public class OpenIdConnectFilterLogicTest {
         assertNotNull(guard);
         assertEquals(120, guard.getMaxAge());
         assertEquals(SERVER + "/app/template/Login.vm", response.getRedirectedUrl());
+    }
+
+    /** A filter whose token exchange is the given rest template, on a request that names the provider. */
+    private OpenIdConnectFilter filterWithRestTemplate(final OAuth2RestTemplate restTemplate) {
+        final OpenIdConnectFilter filter = filterWithServerPath();
+        filter.setOAuth2RestTemplate(restTemplate);
+        return filter;
+    }
+
+    private static MockHttpServletRequest callback() {
+        final MockHttpServletRequest request = new MockHttpServletRequest("GET", "/openid-login");
+        request.setParameter("providerId", PROVIDER);
+        return request;
+    }
+
+    @Test
+    public void failureThatIsNotAnAuthenticationExceptionSetsTheGuardCookie() {
+        // Escapes to XNAT's error page, which renders the login page for a guest: without the guard, auto-login
+        // starts again, reuses the session's access token, fails the same way, and loops.
+        final OAuth2RestTemplate restTemplate = mock(OAuth2RestTemplate.class);
+        when(restTemplate.getAccessToken()).thenThrow(new ResourceAccessException("Connection refused"));
+        final MockHttpServletResponse response = new MockHttpServletResponse();
+
+        assertThrows(ResourceAccessException.class,
+                () -> filterWithRestTemplate(restTemplate).attemptAuthentication(callback(), response));
+
+        assertNotNull(response.getCookie(OpenIdConnectFilter.AUTO_LOGIN_ATTEMPTED_COOKIE));
+    }
+
+    @Test
+    public void tokenResponseWithoutAnIdTokenSetsTheGuardCookie() {
+        final OAuth2RestTemplate restTemplate = mock(OAuth2RestTemplate.class);
+        when(restTemplate.getAccessToken()).thenReturn(new DefaultOAuth2AccessToken("access-token"));
+        final MockHttpServletResponse response = new MockHttpServletResponse();
+
+        assertThrows(NullPointerException.class,
+                () -> filterWithRestTemplate(restTemplate).attemptAuthentication(callback(), response));
+
+        assertNotNull(response.getCookie(OpenIdConnectFilter.AUTO_LOGIN_ATTEMPTED_COOKIE));
+    }
+
+    @Test
+    public void redirectToTheProviderDoesNotSetTheGuardCookie() {
+        // Starting an attempt must not block another window's attempt that is still in flight.
+        final OAuth2RestTemplate restTemplate = mock(OAuth2RestTemplate.class);
+        when(restTemplate.getAccessToken()).thenThrow(
+                new UserRedirectRequiredException("https://idp.example/auth", Collections.emptyMap()));
+        final MockHttpServletResponse response = new MockHttpServletResponse();
+
+        assertThrows(UserRedirectRequiredException.class,
+                () -> filterWithRestTemplate(restTemplate).attemptAuthentication(callback(), response));
+
+        assertNull(response.getCookie(OpenIdConnectFilter.AUTO_LOGIN_ATTEMPTED_COOKIE));
     }
 
     @Test

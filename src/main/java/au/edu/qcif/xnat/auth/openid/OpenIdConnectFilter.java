@@ -43,6 +43,7 @@ import org.springframework.security.authentication.CredentialsExpiredException;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.oauth2.client.OAuth2RestTemplate;
+import org.springframework.security.oauth2.client.resource.UserRedirectRequiredException;
 import org.springframework.security.oauth2.common.OAuth2AccessToken;
 import org.springframework.security.oauth2.common.exceptions.OAuth2Exception;
 import org.springframework.security.oauth2.config.annotation.web.configuration.EnableOAuth2Client;
@@ -94,8 +95,9 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter
     public static final String OPENID_ERROR_MESSAGE = "openIdErrorMessage";
 
     /**
-     * Cookie set here when a sign-in comes back without signing the user in, such as an auto-login (prompt=none)
-     * that finds no provider session. Acts as a short-lived guard: while it is present the login page renders
+     * Cookie set here whenever a sign-in attempt ends without signing the user in: an auto-login (prompt=none)
+     * that finds no provider session, a failure of any kind, or a diversion to another page (see
+     * {@link #attemptAuthentication}). Acts as a short-lived guard: while it is present the login page renders
      * normally instead of re-issuing the auto-login redirect, so a signed-out visitor is not caught in a redirect
      * loop. It is set on the failure rather than when the attempt starts, so an attempt still in flight in another
      * window doesn't stop this one from signing in. It is a cookie rather than an {@code HttpSession} attribute
@@ -238,8 +240,34 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter
         _restTemplate = restTemplate;
     }
 
+    /**
+     * Every attempt that doesn't sign the user in sets the {@link #AUTO_LOGIN_ATTEMPTED_COOKIE} guard, however it
+     * ends, so the login page can't send the browser straight back into the same failure. An exception that isn't
+     * an {@link AuthenticationException} never reaches {@link #unsuccessfulAuthentication}: it goes to XNAT's error
+     * page, which renders the login page for a guest. The one exception is the redirect to the provider that
+     * starts an attempt, so one window's attempt in flight doesn't block another's.
+     */
     @Override
     public Authentication attemptAuthentication(HttpServletRequest request, HttpServletResponse response) throws AuthenticationException, IOException {
+        final Authentication authentication;
+        try {
+            authentication = authenticate(request, response);
+        } catch (final UserRedirectRequiredException e) {
+            throw e;
+        } catch (final AuthenticationException e) {
+            throw e; // unsuccessfulAuthentication sets the guard
+        } catch (final RuntimeException | IOException e) {
+            markAutoLoginAttempted(request, response);
+            throw e;
+        }
+        // A diversion has already set the guard before redirecting; anything else that returns null has not.
+        if (authentication == null && !response.isCommitted()) {
+            markAutoLoginAttempted(request, response);
+        }
+        return authentication;
+    }
+
+    private Authentication authenticate(HttpServletRequest request, HttpServletResponse response) throws AuthenticationException, IOException {
         log.debug("Executed attemptAuthentication...");
 
         // An OAuth error returned to the redirect URI (e.g. ?error=login_required) carries no code to
@@ -362,7 +390,7 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter
             log.info("User {} is not verified, redirecting to verification page.", xdatUser.getUsername());
             String encodedEmail = URLEncoder.encode(xdatUser.getEmail(), StandardCharsets.UTF_8.toString());
             String encodedUsername = URLEncoder.encode(xdatUser.getUsername(), StandardCharsets.UTF_8.toString());
-            response.sendRedirect(fullServerPath() + "/app/template/VerificationSent.vm" +
+            divertTo(request, response, "/app/template/VerificationSent.vm" +
                     "?emailTo=" + encodedEmail + "&emailUsername=" + encodedUsername);
             return null;
         }
@@ -453,8 +481,7 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter
     private Authentication handleAuthorizationError(final HttpServletRequest request, final HttpServletResponse response, final String error) throws IOException {
         if (isInteractionRequiredError(error)) {
             log.debug("OpenID auto-login returned '{}'; showing the login page.", error);
-            markAutoLoginAttempted(request, response);
-            response.sendRedirect(fullServerPath() + "/app/template/Login.vm");
+            divertTo(request, response, "/app/template/Login.vm");
             return null;
         }
         log.info("OpenID provider returned an authorization error: {}", error);
@@ -472,6 +499,15 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter
     /** The site's full server path; isolated here so tests can override it without the static XNAT dependency. */
     String fullServerPath() {
         return TurbineUtils.GetFullServerPath();
+    }
+
+    /**
+     * Ends an attempt that doesn't sign the user in by sending them to {@code path}. The guard is set first, since
+     * a cookie can't be added once the redirect has committed the response.
+     */
+    private void divertTo(final HttpServletRequest request, final HttpServletResponse response, final String path) throws IOException {
+        markAutoLoginAttempted(request, response);
+        response.sendRedirect(fullServerPath() + path);
     }
 
     /** Sets the {@link #AUTO_LOGIN_ATTEMPTED_COOKIE} guard, keeping auto-login off for a short while. */
@@ -558,7 +594,7 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter
         request.getSession().setAttribute(UsernameAuthMappingNotFoundException.class.getSimpleName(),
                 new UsernameAuthMappingNotFoundException(notFound.getUsername(), notFound.getAuthMethod(),
                         notFound.getAuthMethodId(), user.getEmail(), user.getLastname(), user.getFirstname()));
-        response.sendRedirect(fullServerPath() + "/app/template/RegisterExternalLogin.vm");
+        divertTo(request, response, "/app/template/RegisterExternalLogin.vm");
         return null;
     }
 
