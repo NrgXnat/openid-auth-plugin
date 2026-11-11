@@ -43,6 +43,7 @@ import org.springframework.security.authentication.CredentialsExpiredException;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.oauth2.client.OAuth2RestTemplate;
+import org.springframework.security.oauth2.client.resource.UserRedirectRequiredException;
 import org.springframework.security.oauth2.common.OAuth2AccessToken;
 import org.springframework.security.oauth2.common.exceptions.OAuth2Exception;
 import org.springframework.security.oauth2.config.annotation.web.configuration.EnableOAuth2Client;
@@ -94,15 +95,23 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter
     public static final String OPENID_ERROR_MESSAGE = "openIdErrorMessage";
 
     /**
-     * Cookie set by the login-screen extension when an auto-login (prompt=none) redirect is issued. Acts as a
-     * short-lived, one-shot guard: while it is present the login page renders normally instead of re-issuing
-     * the auto-login redirect, so a signed-out visitor is not caught in a redirect loop. It is a cookie rather
-     * than an {@code HttpSession} attribute because the guard must survive the
-     * {@code Login.vm -> /openid-login -> provider -> callback} redirect chain, across which the session does
-     * not reliably persist (the Turbine login page and the Spring filter can observe different sessions).
-     * Cleared here on a successful login, so a later visit to the login page is not held back by it.
+     * Cookie set here whenever a sign-in attempt ends without signing the user in: an auto-login (prompt=none)
+     * that finds no provider session, a failure of any kind, or a diversion to another page (see
+     * {@link #attemptAuthentication}). Acts as a short-lived guard: while it is present the login page renders
+     * normally instead of re-issuing the auto-login redirect, so a signed-out visitor is not caught in a redirect
+     * loop. It is set on the failure rather than when the attempt starts, so an attempt still in flight in another
+     * window doesn't stop this one from signing in. It is a cookie rather than an {@code HttpSession} attribute
+     * because the Turbine login page and this filter can observe different sessions. Cleared on a successful
+     * login, so a later visit to the login page is not held back by it.
      */
     public static final String AUTO_LOGIN_ATTEMPTED_COOKIE = "OPENID_AUTOLOGIN_TRIED";
+
+    /**
+     * Lifetime of the {@link #AUTO_LOGIN_ATTEMPTED_COOKIE} guard, in seconds. Long enough to break the
+     * {@code Login.vm -> provider -> callback -> Login.vm} redirect chain, short enough that a later visit retries,
+     * so a visitor who signs in at the provider in the meantime is still picked up automatically.
+     */
+    static final int AUTO_LOGIN_ATTEMPTED_MAX_AGE_SECONDS = 120;
 
     /**
      * Cookie set on logout to suppress auto-login until the user next signs in explicitly, so that
@@ -231,8 +240,34 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter
         _restTemplate = restTemplate;
     }
 
+    /**
+     * Every attempt that doesn't sign the user in sets the {@link #AUTO_LOGIN_ATTEMPTED_COOKIE} guard, however it
+     * ends, so the login page can't send the browser straight back into the same failure. An exception that isn't
+     * an {@link AuthenticationException} never reaches {@link #unsuccessfulAuthentication}: it goes to XNAT's error
+     * page, which renders the login page for a guest. The one exception is the redirect to the provider that
+     * starts an attempt, so one window's attempt in flight doesn't block another's.
+     */
     @Override
     public Authentication attemptAuthentication(HttpServletRequest request, HttpServletResponse response) throws AuthenticationException, IOException {
+        final Authentication authentication;
+        try {
+            authentication = authenticate(request, response);
+        } catch (final UserRedirectRequiredException e) {
+            throw e;
+        } catch (final AuthenticationException e) {
+            throw e; // unsuccessfulAuthentication sets the guard
+        } catch (final RuntimeException | IOException e) {
+            markAutoLoginAttempted(request, response);
+            throw e;
+        }
+        // A diversion has already set the guard before redirecting; anything else that returns null has not.
+        if (authentication == null && !response.isCommitted()) {
+            markAutoLoginAttempted(request, response);
+        }
+        return authentication;
+    }
+
+    private Authentication authenticate(HttpServletRequest request, HttpServletResponse response) throws AuthenticationException, IOException {
         log.debug("Executed attemptAuthentication...");
 
         // An OAuth error returned to the redirect URI (e.g. ?error=login_required) carries no code to
@@ -240,7 +275,7 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter
         // page quietly instead of being run through — and mangled by — the token-exchange path.
         final String authorizationError = request.getParameter("error");
         if (StringUtils.isNotBlank(authorizationError)) {
-            return handleAuthorizationError(response, authorizationError);
+            return handleAuthorizationError(request, response, authorizationError);
         }
 
         HttpSession session = request.getSession(false);
@@ -355,7 +390,7 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter
             log.info("User {} is not verified, redirecting to verification page.", xdatUser.getUsername());
             String encodedEmail = URLEncoder.encode(xdatUser.getEmail(), StandardCharsets.UTF_8.toString());
             String encodedUsername = URLEncoder.encode(xdatUser.getUsername(), StandardCharsets.UTF_8.toString());
-            response.sendRedirect(TurbineUtils.GetFullServerPath() + "/app/template/VerificationSent.vm" +
+            divertTo(request, response, "/app/template/VerificationSent.vm" +
                     "?emailTo=" + encodedEmail + "&emailUsername=" + encodedUsername);
             return null;
         }
@@ -396,6 +431,9 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter
     @Override
     protected void unsuccessfulAuthentication(HttpServletRequest request, HttpServletResponse response,
                                               AuthenticationException failed) throws IOException, ServletException {
+        // Whichever page this lands on, the login page must not start auto-login again straight away: the provider
+        // would sign the user in silently and the same failure would repeat.
+        markAutoLoginAttempted(request, response);
         // For NewAutoAccountNotAutoEnabledException and CredentialsExpiredException, delegate to the
         // default XNAT failure handler (see XnatUrlAuthenticationFailureHandler)
         if (failed instanceof NewAutoAccountNotAutoEnabledException || failed instanceof CredentialsExpiredException) {
@@ -410,7 +448,7 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter
         request.getSession().setAttribute(OPENID_ERROR_MESSAGE, userMessage);
 
         // Redirect to the login page
-        response.sendRedirect(TurbineUtils.GetFullServerPath() + "/app/template/Login.vm");
+        response.sendRedirect(fullServerPath() + "/app/template/Login.vm");
     }
 
     private static String getUserMessage(final AuthenticationException failed) {
@@ -431,19 +469,19 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter
     /**
      * Handles an OAuth error returned to the redirect URI. An auto-login (prompt=none) attempt that finds no
      * session to reuse comes back with an "interaction required" error (login_required and friends); that is an
-     * expected negative result, so we quietly return to the login page. The login-screen extension's short-lived
-     * {@link #AUTO_LOGIN_ATTEMPTED_COOKIE} guard, set when the redirect was issued, stops the page from
-     * immediately re-issuing the auto-login redirect and looping. Any other error is treated as a genuine failure.
+     * expected negative result, so we quietly return to the login page, setting the short-lived
+     * {@link #AUTO_LOGIN_ATTEMPTED_COOKIE} guard so the page doesn't immediately re-issue the auto-login redirect
+     * and loop. Any other error is treated as a genuine failure.
      *
      * <p>The decision keys off the OIDC error code alone: the interaction-required codes are returned only in
      * response to a {@code prompt=none} request, which only the auto-login flow issues. It deliberately does not
      * consult server-side session state, which does not reliably survive the redirect chain (see
      * {@link #AUTO_LOGIN_ATTEMPTED_COOKIE}).</p>
      */
-    private Authentication handleAuthorizationError(final HttpServletResponse response, final String error) throws IOException {
+    private Authentication handleAuthorizationError(final HttpServletRequest request, final HttpServletResponse response, final String error) throws IOException {
         if (isInteractionRequiredError(error)) {
             log.debug("OpenID auto-login returned '{}'; showing the login page.", error);
-            response.sendRedirect(TurbineUtils.GetFullServerPath() + "/app/template/Login.vm");
+            divertTo(request, response, "/app/template/Login.vm");
             return null;
         }
         log.info("OpenID provider returned an authorization error: {}", error);
@@ -458,10 +496,34 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter
                 || "account_selection_required".equals(error);
     }
 
+    /** The site's full server path; isolated here so tests can override it without the static XNAT dependency. */
+    String fullServerPath() {
+        return TurbineUtils.GetFullServerPath();
+    }
+
+    /**
+     * Ends an attempt that doesn't sign the user in by sending them to {@code path}. The guard is set first, since
+     * a cookie can't be added once the redirect has committed the response.
+     */
+    private void divertTo(final HttpServletRequest request, final HttpServletResponse response, final String path) throws IOException {
+        markAutoLoginAttempted(request, response);
+        response.sendRedirect(fullServerPath() + path);
+    }
+
+    /** Sets the {@link #AUTO_LOGIN_ATTEMPTED_COOKIE} guard, keeping auto-login off for a short while. */
+    static void markAutoLoginAttempted(final HttpServletRequest request, final HttpServletResponse response) {
+        final Cookie cookie = new Cookie(AUTO_LOGIN_ATTEMPTED_COOKIE, "1");
+        cookie.setPath("/");
+        cookie.setHttpOnly(true);
+        cookie.setSecure(request.isSecure());
+        cookie.setMaxAge(AUTO_LOGIN_ATTEMPTED_MAX_AGE_SECONDS);
+        response.addCookie(cookie);
+    }
+
     /**
      * Clears the auto-login cookies once the user has signed in, re-arming auto-login: the
      * {@link #AUTO_LOGIN_SUPPRESS_COOKIE} left by a logout, and the {@link #AUTO_LOGIN_ATTEMPTED_COOKIE} guard left
-     * by the attempt that may have just succeeded. Only cookies present on the request are cleared.
+     * by an earlier failed attempt. Only cookies present on the request are cleared.
      */
     static void clearAutoLoginCookies(final HttpServletRequest request, final HttpServletResponse response) {
         if (request.getCookies() == null) {
@@ -532,7 +594,7 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter
         request.getSession().setAttribute(UsernameAuthMappingNotFoundException.class.getSimpleName(),
                 new UsernameAuthMappingNotFoundException(notFound.getUsername(), notFound.getAuthMethod(),
                         notFound.getAuthMethodId(), user.getEmail(), user.getLastname(), user.getFirstname()));
-        response.sendRedirect(TurbineUtils.GetFullServerPath() + "/app/template/RegisterExternalLogin.vm");
+        divertTo(request, response, "/app/template/RegisterExternalLogin.vm");
         return null;
     }
 

@@ -17,10 +17,12 @@ import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.authentication.CredentialsExpiredException;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.oauth2.client.OAuth2RestTemplate;
+import org.springframework.security.oauth2.common.DefaultOAuth2AccessToken;
 import org.springframework.security.oauth2.client.resource.UserRedirectRequiredException;
 import org.springframework.security.web.authentication.AuthenticationSuccessHandler;
 import org.springframework.security.web.savedrequest.HttpSessionRequestCache;
 import org.springframework.security.web.savedrequest.SavedRequest;
+import org.springframework.web.client.ResourceAccessException;
 
 import javax.servlet.http.Cookie;
 import javax.servlet.http.HttpServletRequest;
@@ -48,6 +50,7 @@ import static org.mockito.Mockito.when;
 public class OpenIdConnectFilterLogicTest {
 
     private static final String PROVIDER = "keycloak";
+    private static final String SERVER   = "https://xnat.example";
 
     @Mock private OpenIdAuthPlugin               plugin;
     @Mock private AuthenticationEventPublisher   eventPublisher;
@@ -66,6 +69,16 @@ public class OpenIdConnectFilterLogicTest {
         lenient().when(plugin.getEnabledProviders()).thenReturn(Collections.singletonList(PROVIDER));
         providerProps.forEach((key, value) -> lenient().when(plugin.getProperty(PROVIDER, key)).thenReturn(value));
         return new OpenIdConnectFilter(plugin, eventPublisher, userAuthService, siteConfigPreferences, keystoreService, new JwtValidatorRegistry(plugin), Runnable::run);
+    }
+
+    /** A filter with no provider properties whose server path doesn't need XNAT's static lookup. */
+    private OpenIdConnectFilter filterWithServerPath() {
+        lenient().when(plugin.getRedirectUri()).thenReturn("/openid/callback");
+        lenient().when(plugin.getProps()).thenReturn(new Properties());
+        lenient().when(plugin.getEnabledProviders()).thenReturn(Collections.singletonList(PROVIDER));
+        return new OpenIdConnectFilter(plugin, eventPublisher, userAuthService, siteConfigPreferences, keystoreService, new JwtValidatorRegistry(plugin), Runnable::run) {
+            @Override String fullServerPath() { return SERVER; }
+        };
     }
 
     private static boolean isIdTokenEncrypted(final OpenIdConnectFilter filter, final String idToken) throws Exception {
@@ -148,6 +161,88 @@ public class OpenIdConnectFilterLogicTest {
         filter.attemptAuthentication(request, response);
     }
 
+    @Test
+    public void interactionRequiredErrorSetsTheGuardCookieAndShowsTheLoginPage() throws Exception {
+        final OpenIdConnectFilter filter = filterWithServerPath();
+        final MockHttpServletRequest request = new MockHttpServletRequest("GET", "/openid-login");
+        request.setParameter("error", "login_required");
+        final MockHttpServletResponse response = new MockHttpServletResponse();
+
+        assertNull(filter.attemptAuthentication(request, response));
+
+        // Without the guard the login page would start auto-login again and loop.
+        final Cookie guard = response.getCookie(OpenIdConnectFilter.AUTO_LOGIN_ATTEMPTED_COOKIE);
+        assertNotNull(guard);
+        assertEquals(120, guard.getMaxAge());
+        assertEquals(SERVER + "/app/template/Login.vm", response.getRedirectedUrl());
+    }
+
+    /** A filter whose token exchange is the given rest template, on a request that names the provider. */
+    private OpenIdConnectFilter filterWithRestTemplate(final OAuth2RestTemplate restTemplate) {
+        final OpenIdConnectFilter filter = filterWithServerPath();
+        filter.setOAuth2RestTemplate(restTemplate);
+        return filter;
+    }
+
+    private static MockHttpServletRequest callback() {
+        final MockHttpServletRequest request = new MockHttpServletRequest("GET", "/openid-login");
+        request.setParameter("providerId", PROVIDER);
+        return request;
+    }
+
+    @Test
+    public void failureThatIsNotAnAuthenticationExceptionSetsTheGuardCookie() {
+        // Escapes to XNAT's error page, which renders the login page for a guest: without the guard, auto-login
+        // starts again, reuses the session's access token, fails the same way, and loops.
+        final OAuth2RestTemplate restTemplate = mock(OAuth2RestTemplate.class);
+        when(restTemplate.getAccessToken()).thenThrow(new ResourceAccessException("Connection refused"));
+        final MockHttpServletResponse response = new MockHttpServletResponse();
+
+        assertThrows(ResourceAccessException.class,
+                () -> filterWithRestTemplate(restTemplate).attemptAuthentication(callback(), response));
+
+        assertNotNull(response.getCookie(OpenIdConnectFilter.AUTO_LOGIN_ATTEMPTED_COOKIE));
+    }
+
+    @Test
+    public void tokenResponseWithoutAnIdTokenSetsTheGuardCookie() {
+        final OAuth2RestTemplate restTemplate = mock(OAuth2RestTemplate.class);
+        when(restTemplate.getAccessToken()).thenReturn(new DefaultOAuth2AccessToken("access-token"));
+        final MockHttpServletResponse response = new MockHttpServletResponse();
+
+        assertThrows(NullPointerException.class,
+                () -> filterWithRestTemplate(restTemplate).attemptAuthentication(callback(), response));
+
+        assertNotNull(response.getCookie(OpenIdConnectFilter.AUTO_LOGIN_ATTEMPTED_COOKIE));
+    }
+
+    @Test
+    public void redirectToTheProviderDoesNotSetTheGuardCookie() {
+        // Starting an attempt must not block another window's attempt that is still in flight.
+        final OAuth2RestTemplate restTemplate = mock(OAuth2RestTemplate.class);
+        when(restTemplate.getAccessToken()).thenThrow(
+                new UserRedirectRequiredException("https://idp.example/auth", Collections.emptyMap()));
+        final MockHttpServletResponse response = new MockHttpServletResponse();
+
+        assertThrows(UserRedirectRequiredException.class,
+                () -> filterWithRestTemplate(restTemplate).attemptAuthentication(callback(), response));
+
+        assertNull(response.getCookie(OpenIdConnectFilter.AUTO_LOGIN_ATTEMPTED_COOKIE));
+    }
+
+    @Test
+    public void failedSignInSetsTheGuardCookie() throws Exception {
+        // A failure after the provider signed the user in would repeat silently through auto-login without it.
+        final OpenIdConnectFilter filter = filterWithServerPath();
+        final MockHttpServletRequest request = new MockHttpServletRequest("GET", "/openid-login");
+        final MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.unsuccessfulAuthentication(request, response, new BadCredentialsException("Could not obtain access token"));
+
+        assertNotNull(response.getCookie(OpenIdConnectFilter.AUTO_LOGIN_ATTEMPTED_COOKIE));
+        assertEquals(SERVER + "/app/template/Login.vm", response.getRedirectedUrl());
+    }
+
     // ---- provider resolution on the callback ---------------------------------------------------
 
     @Test(expected = BadCredentialsException.class)
@@ -195,6 +290,24 @@ public class OpenIdConnectFilterLogicTest {
         assertEquals(OpenIdConnectFilter.AUTO_LOGIN_SUPPRESS_COOKIE, captor.getAllValues().get(0).getName());
         assertEquals(OpenIdConnectFilter.AUTO_LOGIN_ATTEMPTED_COOKIE, captor.getAllValues().get(1).getName());
         captor.getAllValues().forEach(cookie -> assertEquals("expiring the cookie", 0, cookie.getMaxAge()));
+    }
+
+    @Test
+    public void markingAnAttemptSetsAShortLivedGuardCookie() {
+        final HttpServletRequest request = mock(HttpServletRequest.class);
+        final HttpServletResponse response = mock(HttpServletResponse.class);
+        when(request.isSecure()).thenReturn(true);
+
+        OpenIdConnectFilter.markAutoLoginAttempted(request, response);
+
+        final ArgumentCaptor<Cookie> captor = ArgumentCaptor.forClass(Cookie.class);
+        verify(response).addCookie(captor.capture());
+        final Cookie guard = captor.getValue();
+        assertEquals(OpenIdConnectFilter.AUTO_LOGIN_ATTEMPTED_COOKIE, guard.getName());
+        assertEquals(120, guard.getMaxAge());
+        assertEquals("/", guard.getPath());
+        assertTrue("guard cookie must be HttpOnly", guard.isHttpOnly());
+        assertTrue(guard.getSecure());
     }
 
     @Test

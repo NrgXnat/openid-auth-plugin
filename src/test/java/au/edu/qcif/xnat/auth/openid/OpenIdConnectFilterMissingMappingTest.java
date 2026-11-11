@@ -163,6 +163,24 @@ public class OpenIdConnectFilterMissingMappingTest {
     }
 
     @Test
+    public void divertingSetsTheAutoLoginGuardBeforeRedirecting() throws Throwable {
+        // Without it, every later visit to the login page auto-logs-in and lands back on the merge page, so the
+        // user can't reach the login form; the cookie has to go out before the redirect commits the response.
+        forceUserCreate(false);
+        linkingFinds(null);
+
+        try (final MockedStatic<TurbineUtils> turbine = mockStatic(TurbineUtils.class)) {
+            turbine.when(TurbineUtils::GetFullServerPath).thenReturn("https://xnat.example");
+            decide();
+        }
+
+        final org.mockito.InOrder order = org.mockito.Mockito.inOrder(response);
+        order.verify(response).addCookie(org.mockito.ArgumentMatchers.argThat(
+                cookie -> OpenIdConnectFilter.AUTO_LOGIN_ATTEMPTED_COOKIE.equals(cookie.getName())));
+        order.verify(response).sendRedirect(contains("RegisterExternalLogin.vm"));
+    }
+
+    @Test
     public void divertingStashesTheIdentityForTheMergePage() throws Throwable {
         // The merge page reads this attribute to prefill who is being linked; without it the page cannot
         // tell the user which external identity they are attaching.

@@ -24,8 +24,8 @@ import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.LOGOUT_URI;
  *   <li><b>Unified logout</b> ({@code logoutUri} set): stash the login's id_token in a request attribute so
  *   {@link RpInitiatedLogoutSuccessHandler} can send it as {@code id_token_hint} and end the provider session.
  *   No suppression cookie — the redirect to {@code logoutUri} handles it, and a lingering cookie would wrongly
- *   block auto-login after the user next signs in. On an idle timeout the id_token is already gone with the
- *   expired session; the logout is still attempted at the provider (see {@link RpInitiatedLogoutSuccessHandler}),
+ *   block auto-login after the user next signs in. When an idle timeout is routed here ({@code session.onInvalid}
+ *   {@code logout}, the default) the id_token is already gone with the expired session; the logout is still attempted at the provider (see {@link RpInitiatedLogoutSuccessHandler}),
  *   it just can't carry the hint.</li>
  *   <li><b>Local logout</b> ({@code logoutUri} unset): set a cookie telling the login-screen extension to skip
  *   auto-login until the user signs in again, since there is no end-session endpoint to redirect to.</li>
