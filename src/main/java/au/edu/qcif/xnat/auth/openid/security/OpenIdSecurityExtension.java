@@ -12,6 +12,8 @@ import org.springframework.security.web.authentication.preauth.AbstractPreAuthen
 import org.springframework.security.web.session.InvalidSessionStrategy;
 import org.springframework.stereotype.Component;
 
+import java.util.Locale;
+
 import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.LOGOUT_URI;
 import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.SESSION_ON_INVALID;
 import static org.nrg.xdat.services.XdatUserAuthService.OPENID;
@@ -92,7 +94,7 @@ public class OpenIdSecurityExtension extends BaseXnatSecurityExtension {
      * loads back to auto-login, for a deployment where the provider session decides whether the user is signed in.
      */
     private InvalidSessionStrategy invalidSessionStrategy(final String providerId) {
-        final String onInvalid = StringUtils.defaultIfBlank(openIdAuthPlugin.getProperty(providerId, SESSION_ON_INVALID), "logout").trim();
+        final String onInvalid = StringUtils.defaultIfBlank(openIdAuthPlugin.getProperty(providerId, SESSION_ON_INVALID), "logout").trim().toLowerCase(Locale.ROOT);
         switch (onInvalid) {
             case "reauth":
                 log.debug("Expired sessions on page loads sign in again through provider '{}'", providerId);
