@@ -95,6 +95,21 @@ public class OpenIdLoginExtensionTest {
     }
 
     @Test
+    public void redirectsAnonymousUserInAFrame() throws Exception {
+        when(data.getSession()).thenReturn(session);
+        when(data.getResponse()).thenReturn(response);
+        when(data.getRequest()).thenReturn(request);
+        when(guestUser.isGuest()).thenReturn(true);
+        when(plugin.getAutoLoginProviderId()).thenReturn("keycloak");
+        when(request.getHeader("Sec-Fetch-Mode")).thenReturn("navigate");
+        when(request.getHeader("Sec-Fetch-Dest")).thenReturn("iframe");
+
+        extension.handle(data, guestUser, plugin);
+
+        verify(response).sendRedirect(SERVER + "/openid-login?providerId=keycloak&prompt=none");
+    }
+
+    @Test
     public void doesNotRedirectOrSetGuardCookieForAPageScript() throws Exception {
         // XNAT redirects a signed-out XHR to the login page. It can't follow the redirect to the provider, and the
         // guard cookie would keep auto-login off for the user's next page load.
