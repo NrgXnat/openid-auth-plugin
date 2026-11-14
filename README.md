@@ -254,6 +254,24 @@ this per path**, because the expected type legitimately differs between the two 
 supported by the resolution rules but discouraged: a single value would be wrong for at least one
 path. Enabling the gate with no `expectedTypes` for a path rejects every token on it (fail-closed).
 
+### Role sync
+
+Keeps an OpenID user's XNAT roles in step with roles in their token, on every sign-in through either path. Like the gates, each property can be set for both paths or for one (`openid.providerId.bearer.roleSync.enabled`, `openid.providerId.idToken.roleSync.mappings`).
+
+#### openid.`providerId`.roleSync.enabled
+
+Set to `true` to turn role sync on. Defaults to `false`.
+
+#### openid.`providerId`.roleSync.mappings
+
+Comma-delimited list of `<claim path>:<token role>=<XNAT role>` entries. The claim path is dotted, as in `roleCheck.rolePath`. For example:
+
+```
+openid.keycloak.roleSync.mappings=resource_access.xnat.roles:xnat-admin=Administrator,resource_access.datasets.roles:datasets-iq-admin=XnatIQ
+```
+
+Only the XNAT roles named here are managed; XNAT's site administrator role is `Administrator`. At each sign-in a managed role is added when one of its mappings matches the token, and removed when the token carries one of its claim paths but none of its mappings match. A token that carries none of a role's claim paths leaves the role alone, so a token issued to one client doesn't undo a role that another client's token granted. Changes are made as the site's administrator account and logged at `INFO`. A change that fails is logged and grants nothing; sign-in goes ahead. Malformed entries are logged and ignored.
+
 ### Bearer-token authentication
 
 In addition to the interactive login flow, the plugin can authenticate REST requests that present

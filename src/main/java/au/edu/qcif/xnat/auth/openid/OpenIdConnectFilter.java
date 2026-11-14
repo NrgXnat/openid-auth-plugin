@@ -4,6 +4,7 @@ import au.edu.qcif.xnat.auth.openid.gate.AuthPath;
 import au.edu.qcif.xnat.auth.openid.gate.ClaimGate;
 import au.edu.qcif.xnat.auth.openid.gate.ClaimGateException;
 import au.edu.qcif.xnat.auth.openid.gate.ClaimGateFactory;
+import au.edu.qcif.xnat.auth.openid.gate.RoleSync;
 import au.edu.qcif.xnat.auth.openid.gate.TokenContext;
 import au.edu.qcif.xnat.auth.openid.jwt.JwtValidationException;
 import au.edu.qcif.xnat.auth.openid.jwt.JwtValidator;
@@ -131,6 +132,7 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter
     private final AuthenticationEventPublisher _eventPublisher;
     private final KeystoreService _keystoreService;
     private final ClaimGateFactory _gateFactory;
+    private final RoleSync _roleSync;
     private final OpenIdUserResolver _userResolver;
     private final OpenIdAccountPolicy _accountPolicy;
     private final JwtValidatorRegistry _validators;
@@ -161,6 +163,7 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter
         _eventPublisher = eventPublisher;
         _keystoreService = keystoreService;
         _gateFactory = new ClaimGateFactory(plugin);
+        _roleSync = new RoleSync(plugin);
         _userResolver = new OpenIdUserResolver(plugin, userAuthService, notifier);
         _accountPolicy = new OpenIdAccountPolicy(plugin, siteConfigPreferences);
         _validators = validators;
@@ -178,6 +181,7 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter
         _eventPublisher = eventPublisher;
         _keystoreService = keystoreService;
         _gateFactory = new ClaimGateFactory(plugin);
+        _roleSync = new RoleSync(plugin);
         _userResolver = userResolver;
         _accountPolicy = new OpenIdAccountPolicy(plugin, siteConfigPreferences);
         _validators = new JwtValidatorRegistry(plugin);
@@ -399,6 +403,7 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter
         }
 
         if (requesterUsername != null) {
+            xdatUser = _roleSync.apply(providerId, AuthPath.ID_TOKEN, tokenContext, xdatUser);
             Authentication authentication = new OpenIdAuthToken(xdatUser, providerId, authInfo);
 
             Authentication authRequestToken = new OpenIdAuthRequestToken(requesterUsername, providerId);
