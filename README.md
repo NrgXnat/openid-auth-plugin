@@ -254,6 +254,29 @@ this per path**, because the expected type legitimately differs between the two 
 supported by the resolution rules but discouraged: a single value would be wrong for at least one
 path. Enabling the gate with no `expectedTypes` for a path rejects every token on it (fail-closed).
 
+### Role sync
+
+Keeps an OpenID user's XNAT roles in step with roles in their token, on every sign-in through either path. Like the gates, each property can be set for both paths or for one (`openid.providerId.bearer.roleSync.enabled`, `openid.providerId.idToken.roleSync.mappings`).
+
+#### openid.`providerId`.roleSync.enabled
+
+Set to `true` to turn role sync on. Defaults to `false`.
+
+#### openid.`providerId`.roleSync.mappings
+
+Comma-delimited list of `<claim path>:<token role>=<XNAT role>` entries. The claim path is dotted, as in `roleCheck.rolePath`. For example:
+
+```
+openid.keycloak.roleSync.mappings=resource_access.xnat.roles:xnat-admin=Administrator,resource_access.datasets.roles:datasets-iq-admin=XnatIQ
+```
+
+Only the XNAT roles named here are managed; XNAT's site administrator role is `Administrator`. At each sign-in a managed role is added when one of its mappings matches the token, and removed when the token carries one of its claim paths but none of its mappings match. A token that carries none of a role's claim paths leaves the role alone, so a token issued to one client doesn't undo a role that another client's token granted. Changes are made as the site's administrator account and logged at `INFO`. No role is ever removed from that account itself, the site's primary administrator. A change that fails is logged and grants nothing; sign-in goes ahead. Malformed entries are ignored and reported once at startup.
+
+Two things about the provider's tokens decide whether a mapping works as intended:
+
+- **Another client's token can carry the claim path with only some of the user's roles.** A provider can limit the roles in a client's tokens to that client's scope, as Keycloak does when the client's "Full scope allowed" is off. A bearer request with such a token removes the mapped role. A role mapped on the bearer path has to be in scope for every client whose tokens reach XNAT. Otherwise, set the mapping in `openid.providerId.idToken.roleSync.mappings` only.
+- **A provider can leave the claim out when the user has no roles to list**, as Keycloak does. A user whose last role at that path is taken away then keeps the XNAT role, because their token no longer carries the path. Turn on `roleCheck` with the same `rolePath` and a role every XNAT user holds, so every token that reaches role sync carries the path.
+
 ### Bearer-token authentication
 
 In addition to the interactive login flow, the plugin can authenticate REST requests that present

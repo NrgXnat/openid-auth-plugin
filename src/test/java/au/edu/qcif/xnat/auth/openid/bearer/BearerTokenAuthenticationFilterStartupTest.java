@@ -104,6 +104,31 @@ public class BearerTokenAuthenticationFilterStartupTest {
     }
 
     @Test
+    public void reportsAMalformedRoleSyncMappingOnce() {
+        // The same entry reaches both paths through the shared setting; it is reported once, at startup.
+        providers(PROVIDER);
+        property(PROVIDER, "roleSync.enabled", "true");
+        property(PROVIDER, "roleSync.mappings", "groups:xnat-admin=Administrator, nocolon=Role");
+
+        filter().onApplicationEvent(mock(ContextRefreshedEvent.class));
+
+        final List<String> warnings = messagesAt(Level.WARN);
+        assertEquals(warnings.toString(), 1, warnings.size());
+        assertTrue(warnings.get(0).contains("'nocolon=Role'"));
+    }
+
+    @Test
+    public void saysNothingAboutWellFormedRoleSyncMappings() {
+        providers(PROVIDER);
+        property(PROVIDER, "roleSync.enabled", "true");
+        property(PROVIDER, "roleSync.mappings", "groups:xnat-admin=Administrator");
+
+        filter().onApplicationEvent(mock(ContextRefreshedEvent.class));
+
+        assertTrue(appender.list.isEmpty());
+    }
+
+    @Test
     public void reportsLinkingEnabledWithNoSourceProvider() {
         providers(PROVIDER, SOURCE);
         property(PROVIDER, "linkExisting.enabled", "true");
