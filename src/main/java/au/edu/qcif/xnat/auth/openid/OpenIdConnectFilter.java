@@ -175,13 +175,23 @@ public class OpenIdConnectFilter extends AbstractAuthenticationProcessingFilter
                         final SiteConfigPreferences siteConfigPreferences,
                         final KeystoreService keystoreService,
                         final OpenIdUserResolver userResolver) {
+        this(plugin, eventPublisher, siteConfigPreferences, keystoreService, userResolver, new RoleSync(plugin));
+    }
+
+    /** Test seam: as above, with the role sync injected too. */
+    OpenIdConnectFilter(final OpenIdAuthPlugin plugin,
+                        final AuthenticationEventPublisher eventPublisher,
+                        final SiteConfigPreferences siteConfigPreferences,
+                        final KeystoreService keystoreService,
+                        final OpenIdUserResolver userResolver,
+                        final RoleSync roleSync) {
         super(plugin.getRedirectUri());
         setAuthenticationManager(new NoopAuthenticationManager());
         _plugin = plugin;
         _eventPublisher = eventPublisher;
         _keystoreService = keystoreService;
         _gateFactory = new ClaimGateFactory(plugin);
-        _roleSync = new RoleSync(plugin);
+        _roleSync = roleSync;
         _userResolver = userResolver;
         _accountPolicy = new OpenIdAccountPolicy(plugin, siteConfigPreferences);
         _validators = new JwtValidatorRegistry(plugin);

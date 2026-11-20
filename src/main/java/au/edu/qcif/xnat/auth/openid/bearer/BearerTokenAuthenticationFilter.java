@@ -201,6 +201,7 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
         if (_configReported.compareAndSet(false, true)) {
             warnIfAudienceGateUnconfigured();
             warnIfLinkExistingCannotMatch();
+            warnIfRoleSyncMappingsMalformed();
         }
     }
 
@@ -213,12 +214,26 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
                                     final OpenIdUserResolver userResolver,
                                     final OpenIdAccountPolicy accountPolicy,
                                     final AuthenticationEventPublisher eventPublisher) {
+        this(plugin, extractor, providerResolver, validators, gateFactory, new RoleSync(plugin), userResolver,
+             accountPolicy, eventPublisher);
+    }
+
+    /** Test seam: as above, with the role sync injected too. */
+    BearerTokenAuthenticationFilter(final OpenIdAuthPlugin plugin,
+                                    final BearerTokenExtractor extractor,
+                                    final BearerProviderResolver providerResolver,
+                                    final JwtValidatorRegistry validators,
+                                    final ClaimGateFactory gateFactory,
+                                    final RoleSync roleSync,
+                                    final OpenIdUserResolver userResolver,
+                                    final OpenIdAccountPolicy accountPolicy,
+                                    final AuthenticationEventPublisher eventPublisher) {
         _plugin = plugin;
         _extractor = extractor;
         _providerResolver = providerResolver;
         _validators = validators;
         _gateFactory = gateFactory;
-        _roleSync = new RoleSync(plugin);
+        _roleSync = roleSync;
         _userResolver = userResolver;
         _accountPolicy = accountPolicy;
         _eventPublisher = eventPublisher;
@@ -238,6 +253,21 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
                                 + "rejected with 403 until accepted audiences are set. Configure acceptedAudiences, "
                                 + "or set openid.{}.bearer.audCheck.enabled=false to disable the check (not recommended).",
                         providerId, providerId, providerId);
+            }
+        }
+    }
+
+    /**
+     * Warns at startup about role sync mappings that don't parse, on either path, so they are reported
+     * once here rather than at every sign-in. Like the {@code linkExisting} check below, it covers every
+     * enabled provider, bearer or not.
+     */
+    private void warnIfRoleSyncMappingsMalformed() {
+        for (final String providerId : _plugin.getEnabledProviders()) {
+            for (final String entry : _roleSync.malformedMappings(providerId)) {
+                log.warn("Provider '{}' has a role sync mapping that is ignored: '{}'. Each entry of "
+                                + "roleSync.mappings must be <claim path>:<token role>=<XNAT role>.",
+                        providerId, entry);
             }
         }
     }

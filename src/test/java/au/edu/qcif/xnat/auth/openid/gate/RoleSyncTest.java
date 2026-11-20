@@ -1,6 +1,10 @@
 package au.edu.qcif.xnat.auth.openid.gate;
 
 import au.edu.qcif.xnat.auth.openid.OpenIdAuthPlugin;
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.nimbusds.jwt.JWTClaimsSet;
 import org.junit.Before;
 import org.junit.Test;
@@ -8,6 +12,7 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnitRunner;
 import org.nrg.xft.security.UserI;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -141,6 +146,61 @@ public class RoleSyncTest {
     }
 
     @Test
+    public void neverRemovesARoleFromThePrimaryAdmin() {
+        store.roles.add("Administrator");
+        store.primaryAdmin = true;
+
+        final UserI result = sync(AuthPath.ID_TOKEN, clientRoles("xnat", "xnat-access"));
+
+        assertTrue(store.changes.isEmpty());
+        assertSame(user, result);
+    }
+
+    @Test
+    public void stillAddsRolesToThePrimaryAdmin() {
+        store.primaryAdmin = true;
+
+        sync(AuthPath.BEARER, clientRoles("datasets", "datasets-iq-admin"));
+
+        assertEquals(Collections.singletonList("+XnatIQ"), store.changes);
+    }
+
+    @Test
+    public void appliesTheRestWithoutAWarningWhenAnEntryIsMalformed() {
+        props.put("roleSync.mappings", "nocolon=Role, " + MAPPINGS);
+        final Logger logger = (Logger) LoggerFactory.getLogger(RoleSync.class);
+        final ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            sync(AuthPath.BEARER, clientRoles("xnat", "xnat-access", "xnat-admin"));
+        } finally {
+            logger.detachAppender(appender);
+        }
+
+        assertEquals(Collections.singletonList("+Administrator"), store.changes);
+        assertTrue("a malformed entry is reported at startup, not at each sign-in",
+                appender.list.stream().noneMatch(event -> event.getLevel().isGreaterOrEqual(Level.WARN)));
+    }
+
+    @Test
+    public void listsEachMalformedMappingOnceAcrossPaths() {
+        props.put("roleSync.mappings", "nocolon=Role, " + MAPPINGS);
+        props.put("idToken.roleSync.mappings", "nocolon=Role, path:role=, groups:xnat-admin=Administrator");
+
+        assertEquals(new LinkedHashSet<>(Arrays.asList("nocolon=Role", "path:role=")),
+                new RoleSync(plugin, store).malformedMappings(PROVIDER));
+    }
+
+    @Test
+    public void listsNoMalformedMappingsWhenRoleSyncIsOff() {
+        props.remove("roleSync.enabled");
+        props.put("roleSync.mappings", "nocolon=Role");
+
+        assertTrue(new RoleSync(plugin, store).malformedMappings(PROVIDER).isEmpty());
+    }
+
+    @Test
     public void parseSkipsMalformedEntries() {
         final List<RoleSync.Mapping> mappings = RoleSync.parse(
                 "resource_access.xnat.roles:xnat-admin=Administrator, nocolon=Role, path:role=, :role=Role, path:=Role");
@@ -170,6 +230,7 @@ public class RoleSyncTest {
         final List<String> changes = new ArrayList<>();
         final UserI reloaded = mock(UserI.class);
         boolean failAdd;
+        boolean primaryAdmin;
 
         @Override
         public Collection<String> roles(final UserI user) {
@@ -194,6 +255,11 @@ public class RoleSyncTest {
         @Override
         public UserI reload(final UserI user) {
             return reloaded;
+        }
+
+        @Override
+        public boolean isPrimaryAdmin(final UserI user) {
+            return primaryAdmin;
         }
     }
 }

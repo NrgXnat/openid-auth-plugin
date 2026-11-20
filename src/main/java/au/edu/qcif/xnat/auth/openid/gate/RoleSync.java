@@ -15,6 +15,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Keeps an OpenID user's XNAT roles in step with roles their token carries, on every sign-in.
@@ -27,7 +28,11 @@ import java.util.Set;
  * <p>Only XNAT roles named in a mapping are managed. A managed role is granted when a mapping for
  * it matches and removed when the token carries one of its claim paths but no mapping matches. A
  * token that carries none of a role's claim paths leaves that role as it is, so a token minted for
- * another client, without that client's roles, does not undo what the other client granted.</p>
+ * another client, without that client's roles, does not undo what the other client granted. No role
+ * is ever removed from the site's primary administrator account.</p>
+ *
+ * <p>Entries that don't parse are skipped; {@link #malformedMappings} lists them so they can be
+ * reported once at startup rather than on every sign-in.</p>
  */
 @Slf4j
 public class RoleSync {
@@ -41,6 +46,9 @@ public class RoleSync {
         void remove(UserI user, String role) throws Exception;
 
         UserI reload(UserI user);
+
+        /** True for the site's primary administrator account, which role sync never takes a role from. */
+        boolean isPrimaryAdmin(UserI user);
     }
 
     static final class Mapping {
@@ -57,6 +65,8 @@ public class RoleSync {
 
     private final OpenIdAuthPlugin plugin;
     private final RoleStore store;
+    /** Provider and role pairs already reported as kept for the primary administrator. */
+    private final Set<String> keptForPrimaryAdmin = ConcurrentHashMap.newKeySet();
 
     public RoleSync(final OpenIdAuthPlugin plugin) {
         this(plugin, new XnatRoleStore());
@@ -100,6 +110,10 @@ public class RoleSync {
                     log.info("Role sync for provider '{}' gave user '{}' the XNAT role '{}'", providerId, user.getUsername(), role);
                     changed = true;
                 } else if (!wanted && has) {
+                    if (store.isPrimaryAdmin(user)) {
+                        reportKeptForPrimaryAdmin(providerId, user, role);
+                        continue;
+                    }
                     store.remove(user, role);
                     log.info("Role sync for provider '{}' removed the XNAT role '{}' from user '{}'", providerId, role, user.getUsername());
                     changed = true;
@@ -114,6 +128,32 @@ public class RoleSync {
         }
         final UserI reloaded = store.reload(user);
         return reloaded != null ? reloaded : user;
+    }
+
+    /** Says once per provider and role, then only at debug, that the primary administrator keeps a role. */
+    private void reportKeptForPrimaryAdmin(final String providerId, final UserI user, final String role) {
+        if (keptForPrimaryAdmin.add(providerId + "/" + role)) {
+            log.warn("Role sync for provider '{}' left the XNAT role '{}' with user '{}': no role is removed from the "
+                    + "site's primary administrator account", providerId, role, user.getUsername());
+        } else {
+            log.debug("Role sync for provider '{}' left the XNAT role '{}' with the primary administrator '{}'",
+                    providerId, role, user.getUsername());
+        }
+    }
+
+    /**
+     * The role sync mappings of {@code providerId} that don't parse, over every path that has role sync
+     * on, each listed once. {@link #apply} skips these without logging.
+     */
+    public Set<String> malformedMappings(final String providerId) {
+        final List<String> malformed = new ArrayList<>();
+        for (final AuthPath authPath : AuthPath.values()) {
+            final GateConfig config = new GateConfig(plugin, providerId, authPath);
+            if (config.enabled("roleSync")) {
+                parse(config.value("roleSync.mappings"), malformed);
+            }
+        }
+        return new LinkedHashSet<>(malformed);
     }
 
     /** True or false when the token carries at least one of the mappings' claim paths, else null. */
@@ -132,6 +172,11 @@ public class RoleSync {
     }
 
     static List<Mapping> parse(final String value) {
+        return parse(value, new ArrayList<>());
+    }
+
+    /** Parses the entries of {@code value}, adding each one that doesn't parse to {@code malformed}. */
+    static List<Mapping> parse(final String value, final List<String> malformed) {
         if (StringUtils.isBlank(value)) {
             return Collections.emptyList();
         }
@@ -144,14 +189,14 @@ public class RoleSync {
             final int colon = entry.indexOf(':');
             final int equals = entry.lastIndexOf('=');
             if (colon <= 0 || equals <= colon + 1 || equals == entry.length() - 1) {
-                log.warn("Ignoring role sync mapping '{}': expected <claim path>:<token role>=<XNAT role>", entry);
+                malformed.add(entry);
                 continue;
             }
             final String path = entry.substring(0, colon).trim();
             final String tokenRole = entry.substring(colon + 1, equals).trim();
             final String xnatRole = entry.substring(equals + 1).trim();
             if (path.isEmpty() || tokenRole.isEmpty() || xnatRole.isEmpty()) {
-                log.warn("Ignoring role sync mapping '{}': expected <claim path>:<token role>=<XNAT role>", entry);
+                malformed.add(entry);
                 continue;
             }
             mappings.add(new Mapping(path.split("\\."), tokenRole, xnatRole));
@@ -173,6 +218,12 @@ public class RoleSync {
         @Override
         public void remove(final UserI user, final String role) throws Exception {
             Roles.deleteRole(Users.getAdminUser(), user, role);
+        }
+
+        @Override
+        public boolean isPrimaryAdmin(final UserI user) {
+            final UserI admin = Users.getAdminUser();
+            return admin != null && StringUtils.equals(admin.getUsername(), user.getUsername());
         }
 
         @Override
