@@ -107,15 +107,17 @@ public class ReauthInvalidSessionStrategyTest {
     }
 
     @Test
-    public void framedPageLoadGoesToTheLoginPage() throws Exception {
-        // The provider usually refuses to be framed, so sign-in can't complete inside an iframe.
+    public void framedPageLoadSignsInAgainAtTheSameUrl() throws Exception {
+        // Auto-login's prompt=none never shows the provider's page, so it completes inside a frame too.
         final MockHttpServletRequest request = get("/app/template/Page.vm");
         request.addHeader("Sec-Fetch-Mode", "navigate");
         request.addHeader("Sec-Fetch-Dest", "iframe");
 
         strategy.onInvalidSessionDetected(request, response);
 
-        assertSentToLoginPage(request);
+        assertNotNull(request.getSession(false));
+        assertEquals(303, response.getStatus());
+        assertEquals("/app/template/Page.vm", response.getRedirectedUrl());
     }
 
     @Test
