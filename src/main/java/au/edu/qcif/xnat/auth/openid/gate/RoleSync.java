@@ -3,6 +3,8 @@ package au.edu.qcif.xnat.auth.openid.gate;
 import au.edu.qcif.xnat.auth.openid.OpenIdAuthPlugin;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
+import org.nrg.xdat.XDAT;
+import org.nrg.xdat.preferences.SiteConfigPreferences;
 import org.nrg.xdat.security.helpers.Roles;
 import org.nrg.xdat.security.helpers.Users;
 import org.nrg.xft.security.UserI;
@@ -29,7 +31,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * it matches and removed when the token carries one of its claim paths but no mapping matches. A
  * token that carries none of a role's claim paths leaves that role as it is, so a token minted for
  * another client, without that client's roles, does not undo what the other client granted. No role
- * is ever removed from the site's primary administrator account.</p>
+ * is ever removed from the site's primary administrator account or its received-file user: XNAT does
+ * its own work as those accounts and expects both to be administrators.</p>
  *
  * <p>Entries that don't parse are skipped; {@link #malformedMappings} lists them so they can be
  * reported once at startup rather than on every sign-in.</p>
@@ -47,8 +50,11 @@ public class RoleSync {
 
         UserI reload(UserI user);
 
-        /** True for the site's primary administrator account, which role sync never takes a role from. */
-        boolean isPrimaryAdmin(UserI user);
+        /**
+         * True for an account XNAT does its own work as: the site's primary administrator or its
+         * received-file user. Role sync never takes a role from either.
+         */
+        boolean isSystemAccount(UserI user);
     }
 
     static final class Mapping {
@@ -65,8 +71,8 @@ public class RoleSync {
 
     private final OpenIdAuthPlugin plugin;
     private final RoleStore store;
-    /** Provider and role pairs already reported as kept for the primary administrator. */
-    private final Set<String> keptForPrimaryAdmin = ConcurrentHashMap.newKeySet();
+    /** Provider, user, and role triples already reported as kept for a system account. */
+    private final Set<String> keptForSystemAccount = ConcurrentHashMap.newKeySet();
 
     public RoleSync(final OpenIdAuthPlugin plugin) {
         this(plugin, new XnatRoleStore());
@@ -110,8 +116,8 @@ public class RoleSync {
                     log.info("Role sync for provider '{}' gave user '{}' the XNAT role '{}'", providerId, user.getUsername(), role);
                     changed = true;
                 } else if (!wanted && has) {
-                    if (store.isPrimaryAdmin(user)) {
-                        reportKeptForPrimaryAdmin(providerId, user, role);
+                    if (store.isSystemAccount(user)) {
+                        reportKeptForSystemAccount(providerId, user, role);
                         continue;
                     }
                     store.remove(user, role);
@@ -130,13 +136,13 @@ public class RoleSync {
         return reloaded != null ? reloaded : user;
     }
 
-    /** Says once per provider and role, then only at debug, that the primary administrator keeps a role. */
-    private void reportKeptForPrimaryAdmin(final String providerId, final UserI user, final String role) {
-        if (keptForPrimaryAdmin.add(providerId + "/" + role)) {
+    /** Says once per provider, user, and role, then only at debug, that a system account keeps a role. */
+    private void reportKeptForSystemAccount(final String providerId, final UserI user, final String role) {
+        if (keptForSystemAccount.add(providerId + "/" + user.getUsername() + "/" + role)) {
             log.warn("Role sync for provider '{}' left the XNAT role '{}' with user '{}': no role is removed from the "
-                    + "site's primary administrator account", providerId, role, user.getUsername());
+                    + "site's primary administrator or its received-file user", providerId, role, user.getUsername());
         } else {
-            log.debug("Role sync for provider '{}' left the XNAT role '{}' with the primary administrator '{}'",
+            log.debug("Role sync for provider '{}' left the XNAT role '{}' with the system account '{}'",
                     providerId, role, user.getUsername());
         }
     }
@@ -221,9 +227,14 @@ public class RoleSync {
         }
 
         @Override
-        public boolean isPrimaryAdmin(final UserI user) {
+        public boolean isSystemAccount(final UserI user) {
+            final String username = user.getUsername();
             final UserI admin = Users.getAdminUser();
-            return admin != null && StringUtils.equals(admin.getUsername(), user.getUsername());
+            if (admin != null && StringUtils.equals(admin.getUsername(), username)) {
+                return true;
+            }
+            final SiteConfigPreferences preferences = XDAT.getSiteConfigPreferences();
+            return preferences != null && StringUtils.equals(preferences.getReceivedFileUser(), username);
         }
 
         @Override

@@ -10,7 +10,11 @@ import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
+import org.mockito.MockedStatic;
 import org.mockito.junit.MockitoJUnitRunner;
+import org.nrg.xdat.XDAT;
+import org.nrg.xdat.preferences.SiteConfigPreferences;
+import org.nrg.xdat.security.helpers.Users;
 import org.nrg.xft.security.UserI;
 import org.slf4j.LoggerFactory;
 
@@ -25,12 +29,15 @@ import java.util.Map;
 import java.util.Set;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.mockStatic;
+import static org.mockito.Mockito.when;
 
 @RunWith(MockitoJUnitRunner.class)
 public class RoleSyncTest {
@@ -146,9 +153,9 @@ public class RoleSyncTest {
     }
 
     @Test
-    public void neverRemovesARoleFromThePrimaryAdmin() {
+    public void neverRemovesARoleFromASystemAccount() {
         store.roles.add("Administrator");
-        store.primaryAdmin = true;
+        store.systemAccount = true;
 
         final UserI result = sync(AuthPath.ID_TOKEN, clientRoles("xnat", "xnat-access"));
 
@@ -157,8 +164,8 @@ public class RoleSyncTest {
     }
 
     @Test
-    public void stillAddsRolesToThePrimaryAdmin() {
-        store.primaryAdmin = true;
+    public void stillAddsRolesToASystemAccount() {
+        store.systemAccount = true;
 
         sync(AuthPath.BEARER, clientRoles("datasets", "datasets-iq-admin"));
 
@@ -225,12 +232,35 @@ public class RoleSyncTest {
         return builder.build();
     }
 
+    @Test
+    public void thePrimaryAdminAndTheReceivedFileUserAreSystemAccounts() {
+        final UserI admin = named("admin");
+        final SiteConfigPreferences preferences = mock(SiteConfigPreferences.class);
+        when(preferences.getReceivedFileUser()).thenReturn("receiver");
+        try (MockedStatic<Users> users = mockStatic(Users.class);
+             MockedStatic<XDAT> xdat = mockStatic(XDAT.class)) {
+            users.when(Users::getAdminUser).thenReturn(admin);
+            xdat.when(XDAT::getSiteConfigPreferences).thenReturn(preferences);
+            final RoleSync.RoleStore xnat = new RoleSync.XnatRoleStore();
+
+            assertTrue(xnat.isSystemAccount(named("admin")));
+            assertTrue(xnat.isSystemAccount(named("receiver")));
+            assertFalse(xnat.isSystemAccount(named("jane")));
+        }
+    }
+
+    private static UserI named(final String username) {
+        final UserI named = mock(UserI.class);
+        when(named.getUsername()).thenReturn(username);
+        return named;
+    }
+
     private static final class FakeStore implements RoleSync.RoleStore {
         final Set<String> roles = new LinkedHashSet<>();
         final List<String> changes = new ArrayList<>();
         final UserI reloaded = mock(UserI.class);
         boolean failAdd;
-        boolean primaryAdmin;
+        boolean systemAccount;
 
         @Override
         public Collection<String> roles(final UserI user) {
@@ -258,8 +288,8 @@ public class RoleSyncTest {
         }
 
         @Override
-        public boolean isPrimaryAdmin(final UserI user) {
-            return primaryAdmin;
+        public boolean isSystemAccount(final UserI user) {
+            return systemAccount;
         }
     }
 }
