@@ -3,12 +3,15 @@ package au.edu.qcif.xnat.auth.openid.security;
 import au.edu.qcif.xnat.auth.openid.bearer.BearerTokenAuthenticationFilter;
 import au.edu.qcif.xnat.auth.openid.OpenIdAuthPlugin;
 import au.edu.qcif.xnat.auth.openid.OpenIdConnectFilter;
+import au.edu.qcif.xnat.auth.openid.discovery.ProtectedResourceMetadata;
+import au.edu.qcif.xnat.auth.openid.discovery.ProtectedResourceMetadataFilter;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 import org.nrg.xnat.security.BaseXnatSecurityExtension;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.oauth2.client.filter.OAuth2ClientContextFilter;
 import org.springframework.security.web.authentication.preauth.AbstractPreAuthenticatedProcessingFilter;
+import org.springframework.security.web.context.SecurityContextPersistenceFilter;
 import org.springframework.security.web.session.InvalidSessionStrategy;
 import org.springframework.stereotype.Component;
 
@@ -24,13 +27,19 @@ public class OpenIdSecurityExtension extends BaseXnatSecurityExtension {
     final OpenIdAuthPlugin openIdAuthPlugin;
     final OpenIdConnectFilter openIdConnectFilter;
     final BearerTokenAuthenticationFilter bearerTokenAuthenticationFilter;
+    final ProtectedResourceMetadata protectedResourceMetadata;
+    final ProtectedResourceMetadataFilter protectedResourceMetadataFilter;
 
     public OpenIdSecurityExtension(final OpenIdAuthPlugin openIdAuthPlugin,
                                    final OpenIdConnectFilter openIdConnectFilter,
-                                   final BearerTokenAuthenticationFilter bearerTokenAuthenticationFilter) {
+                                   final BearerTokenAuthenticationFilter bearerTokenAuthenticationFilter,
+                                   final ProtectedResourceMetadata protectedResourceMetadata,
+                                   final ProtectedResourceMetadataFilter protectedResourceMetadataFilter) {
         this.openIdAuthPlugin = openIdAuthPlugin;
         this.openIdConnectFilter = openIdConnectFilter;
         this.bearerTokenAuthenticationFilter = bearerTokenAuthenticationFilter;
+        this.protectedResourceMetadata = protectedResourceMetadata;
+        this.protectedResourceMetadataFilter = protectedResourceMetadataFilter;
     }
 
     @Override
@@ -49,6 +58,11 @@ public class OpenIdSecurityExtension extends BaseXnatSecurityExtension {
                 } else {
                     http.addFilterAfter(new OAuth2ClientContextFilter(), AbstractPreAuthenticatedProcessingFilter.class)
                             .addFilterAfter(openIdConnectFilter, OAuth2ClientContextFilter.class);
+                }
+                // Ahead of the security context and session handling, so the public metadata document
+                // is answered for anonymous callers without a login redirect or a session.
+                if (protectedResourceMetadata.isEnabled()) {
+                    http.addFilterBefore(protectedResourceMetadataFilter, SecurityContextPersistenceFilter.class);
                 }
                 configureLogoutAndTimeout(http);
             }

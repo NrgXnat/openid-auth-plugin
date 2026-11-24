@@ -3,6 +3,7 @@ package au.edu.qcif.xnat.auth.openid.bearer;
 import au.edu.qcif.xnat.auth.openid.OpenIdAccountPolicy;
 import au.edu.qcif.xnat.auth.openid.OpenIdAuthPlugin;
 import au.edu.qcif.xnat.auth.openid.OpenIdUserResolver;
+import au.edu.qcif.xnat.auth.openid.discovery.ProtectedResourceMetadata;
 import au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant;
 import au.edu.qcif.xnat.auth.openid.gate.AuthPath;
 import au.edu.qcif.xnat.auth.openid.gate.ClaimGateFactory;
@@ -113,7 +114,7 @@ public class BearerTokenAuthenticationFilterTest {
         final OpenIdAccountPolicy accountPolicy = new OpenIdAccountPolicy(plugin, siteConfigPreferences);
         filter = new BearerTokenAuthenticationFilter(plugin, new BearerTokenExtractor(),
                 new BearerProviderResolver(plugin), validators, new ClaimGateFactory(plugin), userResolver,
-                accountPolicy, eventPublisher);
+                accountPolicy, eventPublisher, new ProtectedResourceMetadata(plugin));
 
         request = new MockHttpServletRequest();
         response = new MockHttpServletResponse();
@@ -270,7 +271,28 @@ public class BearerTokenAuthenticationFilterTest {
         assertEquals(HttpServletResponse.SC_UNAUTHORIZED, response.getStatus());
         assertNull("chain must not be invoked", chain.getRequest());
         assertNull(currentAuth());
-        assertTrue(response.getHeader("WWW-Authenticate").startsWith("Bearer"));
+        assertEquals("Bearer error=\"invalid_token\"", response.getHeader("WWW-Authenticate"));
+    }
+
+    @Test
+    public void unauthorizedPointsAtResourceMetadataWhenDiscoveryIsEnabled() throws Exception {
+        when(plugin.getProperty("discovery.enabled")).thenReturn("true");
+        when(plugin.getProperty("discovery.provider")).thenReturn(PROVIDER);
+        when(plugin.isEnabled(PROVIDER)).thenReturn(true);
+        when(plugin.getSiteUrl()).thenReturn("https://xnat.example");
+        filter = new BearerTokenAuthenticationFilter(plugin, new BearerTokenExtractor(),
+                new BearerProviderResolver(plugin), new JwtValidatorRegistry(Collections.emptyMap()),
+                new ClaimGateFactory(plugin), userResolver, new OpenIdAccountPolicy(plugin, siteConfigPreferences),
+                eventPublisher, new ProtectedResourceMetadata(plugin));
+        request.setServerName("xnat.example");
+        bearer("not-a-jwt");
+
+        doFilter();
+
+        assertEquals(HttpServletResponse.SC_UNAUTHORIZED, response.getStatus());
+        assertEquals("Bearer error=\"invalid_token\", "
+                        + "resource_metadata=\"https://xnat.example/.well-known/oauth-protected-resource\"",
+                response.getHeader("WWW-Authenticate"));
     }
 
     @Test
@@ -445,7 +467,8 @@ public class BearerTokenAuthenticationFilterTest {
                 new BearerProviderResolver(plugin),
                 new JwtValidatorRegistry(Collections.singletonMap(PROVIDER,
                         new JwtValidator(ISSUER, trustedSource, JwtValidator.ACCESS_TOKEN_TYPES))),
-                new ClaimGateFactory(plugin), userResolver, accountPolicy, eventPublisher);
+                new ClaimGateFactory(plugin), userResolver, accountPolicy, eventPublisher,
+                new ProtectedResourceMetadata(plugin));
 
         bearer(sign(signingKey, validClaims().claim("email", "alice@gmail.com").build()));
 
