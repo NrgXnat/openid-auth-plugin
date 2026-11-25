@@ -201,7 +201,7 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
         if (_configReported.compareAndSet(false, true)) {
             warnIfAudienceGateUnconfigured();
             warnIfLinkExistingCannotMatch();
-            warnIfRoleSyncMappingsMalformed();
+            reportRoleSyncSettings();
         }
     }
 
@@ -258,18 +258,12 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
     }
 
     /**
-     * Warns at startup about role sync mappings that don't parse, on either path, so they are reported
-     * once here rather than at every sign-in. Like the {@code linkExisting} check below, it covers every
-     * enabled provider, bearer or not.
+     * Has role sync say at startup what it will do and what is wrong with its settings, so mistakes are
+     * reported once here rather than at every sign-in. Like the {@code linkExisting} check below, it covers
+     * every enabled provider; the bearer path only for the providers this filter serves.
      */
-    private void warnIfRoleSyncMappingsMalformed() {
-        for (final String providerId : _plugin.getEnabledProviders()) {
-            for (final String entry : _roleSync.malformedMappings(providerId)) {
-                log.warn("Provider '{}' has a role sync mapping that is ignored: '{}'. Each entry of "
-                                + "roleSync.mappings must be <claim path>:<token role>=<XNAT role>.",
-                        providerId, entry);
-            }
-        }
+    private void reportRoleSyncSettings() {
+        _roleSync.reportSettings(_providerResolver.providerIds());
     }
 
     /**
