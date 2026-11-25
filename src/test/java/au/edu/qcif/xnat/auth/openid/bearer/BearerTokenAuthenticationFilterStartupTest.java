@@ -78,7 +78,7 @@ public class BearerTokenAuthenticationFilterStartupTest {
                                                    mock(BearerProviderResolver.class), new JwtValidatorRegistry(Collections.emptyMap()),
                                                    null, mock(OpenIdUserResolver.class),
                                                    mock(OpenIdAccountPolicy.class),
-                                                   mock(AuthenticationEventPublisher.class));
+                                                   mock(AuthenticationEventPublisher.class), null);
     }
 
     private void providers(final String... ids) {

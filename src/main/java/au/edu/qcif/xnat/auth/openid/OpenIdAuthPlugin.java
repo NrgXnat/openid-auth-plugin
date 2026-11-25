@@ -90,6 +90,11 @@ public class OpenIdAuthPlugin {
         return _props;
     }
 
+    /** The provider properties' {@code siteUrl}, or XNAT's site URL when that is not set. */
+    public String getSiteUrl() {
+        return StringUtils.getIfBlank(getProps().getProperty("siteUrl"), _siteConfigPreferences::getSiteUrl);
+    }
+
     public String getRedirectUri() {
         return StringUtils.prependIfMissing(_props.getProperty(KEY_REDIR_URI, DEFAULT_REDIR_URI), "/");
     }
@@ -195,7 +200,7 @@ public class OpenIdAuthPlugin {
         final String       clientSecret      = getProperty(providerId, "clientSecret");
         final String       accessTokenUri    = getProperty(providerId, "accessTokenUri");
         final String       userAuthUri       = getProperty(providerId, "userAuthUri");
-        final String       preEstablishedUri = StringUtils.stripEnd(StringUtils.getIfBlank(getProps().getProperty("siteUrl"), _siteConfigPreferences::getSiteUrl), "/") + getRedirectUri();
+        final String       preEstablishedUri = StringUtils.stripEnd(getSiteUrl(), "/") + getRedirectUri();
         final List<String> scopes            = Arrays.asList(StringUtils.split(getProperty(providerId, "scopes"), ", "));
 
         final PkceAuthorizationCodeResourceDetails details = new PkceAuthorizationCodeResourceDetails();

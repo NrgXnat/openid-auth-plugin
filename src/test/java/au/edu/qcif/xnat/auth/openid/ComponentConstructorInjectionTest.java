@@ -1,6 +1,8 @@
 package au.edu.qcif.xnat.auth.openid;
 
 import au.edu.qcif.xnat.auth.openid.bearer.BearerTokenAuthenticationFilter;
+import au.edu.qcif.xnat.auth.openid.discovery.ProtectedResourceMetadata;
+import au.edu.qcif.xnat.auth.openid.discovery.ProtectedResourceMetadataFilter;
 import org.junit.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 
@@ -30,6 +32,12 @@ public class ComponentConstructorInjectionTest {
     @Test
     public void bearerTokenAuthenticationFilterDeclaresWhichConstructorSpringShouldUse() {
         assertUnambiguous(BearerTokenAuthenticationFilter.class);
+    }
+
+    @Test
+    public void protectedResourceMetadataComponentsDeclareWhichConstructorSpringShouldUse() {
+        assertUnambiguous(ProtectedResourceMetadata.class);
+        assertUnambiguous(ProtectedResourceMetadataFilter.class);
     }
 
     /**

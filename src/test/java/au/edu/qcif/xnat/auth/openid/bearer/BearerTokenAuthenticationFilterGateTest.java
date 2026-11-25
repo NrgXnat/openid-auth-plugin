@@ -40,7 +40,7 @@ public class BearerTokenAuthenticationFilterGateTest {
         providerProps.forEach((key, value) -> lenient().when(plugin.getProperty(PROVIDER, key)).thenReturn(value));
         // Only the gate factory matters here; the other collaborators are unused by applyBearerClaimGates.
         return new BearerTokenAuthenticationFilter(plugin, new BearerTokenExtractor(), null,
-                new JwtValidatorRegistry(Collections.emptyMap()), new ClaimGateFactory(plugin), null, null, null);
+                new JwtValidatorRegistry(Collections.emptyMap()), new ClaimGateFactory(plugin), null, null, null, null);
     }
 
     private static void applyBearerClaimGates(final BearerTokenAuthenticationFilter filter, final String providerId,
