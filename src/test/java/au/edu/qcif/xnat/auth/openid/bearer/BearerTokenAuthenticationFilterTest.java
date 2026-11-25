@@ -40,6 +40,8 @@ import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.security.authentication.AuthenticationEventPublisher;
 import org.springframework.security.authentication.AuthenticationServiceException;
 import org.springframework.security.core.Authentication;
+import org.springframework.security.core.GrantedAuthority;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 
 import javax.servlet.ServletRequest;
@@ -58,6 +60,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.Assert.assertEquals;
@@ -65,6 +68,7 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -583,6 +587,97 @@ public class BearerTokenAuthenticationFilterTest {
         }
 
         assertEquals(1, resolutions.get());
+    }
+
+    /**
+     * XDATUser fills its authorities into a plain HashSet on first use. This user does the same, and a
+     * call that overlaps the filling sees a null element, as a corrupted HashSet does.
+     */
+    private static UserI userWithLazyAuthorities() {
+        final UserI user = mock(UserI.class);
+        lenient().when(user.getUsername()).thenReturn(USERNAME);
+        lenient().when(user.isEnabled()).thenReturn(true);
+        lenient().when(user.isAccountNonLocked()).thenReturn(true);
+        final List<GrantedAuthority> filled = List.of(new SimpleGrantedAuthority("ROLE_USER"));
+        final AtomicBoolean filling = new AtomicBoolean();
+        final AtomicBoolean done = new AtomicBoolean();
+        lenient().doAnswer(invocation -> {
+            if (done.get()) {
+                return filled;
+            }
+            if (!filling.compareAndSet(false, true)) {
+                return Arrays.asList(new SimpleGrantedAuthority("ROLE_USER"), null);
+            }
+            Thread.sleep(200);
+            done.set(true);
+            return filled;
+        }).when(user).getAuthorities();
+        return user;
+    }
+
+    @Test
+    public void concurrentRequestsBuildTokensFromAUserWhoseAuthoritiesAreAlreadyFilled() throws Exception {
+        final UserI user = userWithLazyAuthorities();
+        when(userResolver.resolveExisting(USERNAME, PROVIDER)).thenAnswer(invocation -> {
+            Thread.sleep(300);
+            return user;
+        });
+        final String token = sign(signingKey, validClaims().build());
+        final int requests = 8;
+        final CountDownLatch start = new CountDownLatch(1);
+        final ExecutorService pool = Executors.newFixedThreadPool(requests);
+        try {
+            final List<Future<Boolean>> outcomes = new ArrayList<>();
+            for (int i = 0; i < requests; i++) {
+                outcomes.add(pool.submit(() -> {
+                    final MockHttpServletRequest concurrentRequest = new MockHttpServletRequest();
+                    concurrentRequest.addHeader("Authorization", "Bearer " + token);
+                    final MockFilterChain concurrentChain = new MockFilterChain();
+                    start.await();
+                    try {
+                        filter.doFilter(concurrentRequest, new MockHttpServletResponse(), concurrentChain);
+                        return concurrentChain.getRequest() != null;
+                    } finally {
+                        SecurityContextHolder.clearContext();
+                    }
+                }));
+            }
+            start.countDown();
+            for (final Future<Boolean> outcome : outcomes) {
+                assertTrue("every request should authenticate", outcome.get(10, TimeUnit.SECONDS));
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    public void aUserWhoseTokenCannotBeBuiltIsLoadedAgain() throws Exception {
+        final UserI broken = enabledUser();
+        final AtomicInteger calls = new AtomicInteger();
+        doAnswer(invocation -> {
+            if (calls.incrementAndGet() > 1) {
+                throw new NullPointerException("authorities");
+            }
+            return Collections.emptyList();
+        }).when(broken).getAuthorities();
+        final UserI healthy = enabledUser();
+        when(userResolver.resolveExisting(USERNAME, PROVIDER)).thenReturn(broken).thenReturn(healthy);
+        final String token = sign(signingKey, validClaims().build());
+
+        bearer(token);
+        try {
+            doFilter();
+            org.junit.Assert.fail("expected the token build to fail");
+        } catch (final NullPointerException expected) {
+            // the request fails as before
+        }
+
+        nextRequest();
+        bearer(token);
+        doFilter();
+        assertNotNull("the next request should load the user again and authenticate", chain.getRequest());
+        verify(userResolver, times(2)).resolveExisting(USERNAME, PROVIDER);
     }
 
     @Test

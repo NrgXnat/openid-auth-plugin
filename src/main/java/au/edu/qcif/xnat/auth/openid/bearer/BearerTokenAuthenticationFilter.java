@@ -182,8 +182,9 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
      * while it takes a second. Loaded once per request, a burst such as a viewer fetching every image in
      * a series puts as many loads in flight as the pool has connections, and each holds one connection
      * and waits for another until the pool times out. {@link Cache#get(Object, java.util.concurrent.Callable)}
-     * runs one load per key and makes concurrent callers wait for it. Sharing the user object across
-     * requests is what a session-backed login does too.
+     * runs one load per key and makes concurrent callers wait for it. A session-backed login shares its
+     * user across requests too, but builds its token once, at sign-in; here every request builds one,
+     * so the load also fills what that reads (see {@link #cachedUser}).
      */
     private final Cache<Map.Entry<String, String>, UserI> _users = CacheBuilder.newBuilder()
             .expireAfterWrite(USER_CACHE_TTL)
@@ -480,7 +481,13 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
             return;
         }
 
-        final Authentication authentication = new BearerAuthToken(xdatUser, providerId);
+        final Authentication authentication;
+        try {
+            authentication = new BearerAuthToken(xdatUser, providerId);
+        } catch (final RuntimeException e) {
+            _users.invalidate(Map.entry(providerId, user.getUsername()));
+            throw e;
+        }
         SecurityContextHolder.getContext().setAuthentication(authentication);
         if (loaded.get()) {
             recordSuccessfulAuthentication(user.getUsername(), xdatUser, providerId, request);
@@ -534,14 +541,19 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
     /**
      * The XNAT user for this identity, from {@link #_users} or resolved now. {@code loaded} is set when
      * this call did the resolving. A {@link Rejection} is not cached, but callers waiting on the same
-     * resolution receive it too.
+     * resolution receive it too. A user whose token cannot be built is dropped from the cache.
      */
     private UserI cachedUser(final String providerId, final OpenIdConnectUserDetails user, final AtomicBoolean loaded)
             throws Rejection {
         try {
             return _users.get(Map.entry(providerId, user.getUsername()), () -> {
                 loaded.set(true);
-                return resolveUser(providerId, user);
+                final UserI resolved = resolveUser(providerId, user);
+                // XDATUser fills its authorities into a plain HashSet on first use. Requests that
+                // share the user each build a token from them, so they are filled here, before the
+                // user is shared, and those requests only read them.
+                resolved.getAuthorities();
+                return resolved;
             });
         } catch (final ExecutionException | UncheckedExecutionException e) {
             Throwables.throwIfInstanceOf(e.getCause(), Rejection.class);
