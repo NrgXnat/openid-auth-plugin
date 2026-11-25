@@ -69,9 +69,26 @@ public class OpenIdUserResolver {
     /**
      * @return the existing XNAT user for this OpenID mapping.
      * @throws UsernameAuthMappingNotFoundException if no mapping exists for {@code (username, OPENID, providerId)}.
+     * @throws AccountUnavailableException if the mapping exists but its account could not be loaded, or the
+     *                                     mapping could not be looked up.
      */
     public UserI resolveExisting(final String username, final String providerId) throws UsernameAuthMappingNotFoundException {
-        return _userAuthService.getUserDetailsByNameAndAuth(username, XdatUserAuthService.OPENID, providerId);
+        try {
+            return _userAuthService.getUserDetailsByNameAndAuth(username, XdatUserAuthService.OPENID, providerId);
+        } catch (final UsernameAuthMappingNotFoundException notFound) {
+            // XNAT reports a mapped account that it failed to load (a database timeout, for one) as a missing
+            // mapping, which would send the caller on to linking, account creation or a "no account" denial.
+            final XdatUserAuth mapping;
+            try {
+                mapping = _userAuthService.getUserByNameAndAuth(username, XdatUserAuthService.OPENID, providerId);
+            } catch (final RuntimeException e) {
+                throw new AccountUnavailableException("Could not look up the XNAT account mapping for this identity", e);
+            }
+            if (mapping != null) {
+                throw new AccountUnavailableException("The XNAT account mapped to this identity could not be loaded");
+            }
+            throw notFound;
+        }
     }
 
     /**

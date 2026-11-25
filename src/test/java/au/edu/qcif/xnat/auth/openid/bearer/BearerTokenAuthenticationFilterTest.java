@@ -1,5 +1,6 @@
 package au.edu.qcif.xnat.auth.openid.bearer;
 
+import au.edu.qcif.xnat.auth.openid.AccountUnavailableException;
 import au.edu.qcif.xnat.auth.openid.OpenIdAccountPolicy;
 import au.edu.qcif.xnat.auth.openid.OpenIdAuthPlugin;
 import au.edu.qcif.xnat.auth.openid.OpenIdUserResolver;
@@ -45,11 +46,19 @@ import javax.servlet.ServletRequest;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import javax.servlet.http.HttpSession;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
@@ -59,6 +68,7 @@ import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -506,6 +516,125 @@ public class BearerTokenAuthenticationFilterTest {
 
         assertNotNull("chain should be invoked", chain.getRequest());
         org.mockito.Mockito.verify(eventPublisher).publishAuthenticationSuccess(org.mockito.ArgumentMatchers.any());
+    }
+
+    // ---- reusing a resolved user ---------------------------------------------------------------
+
+    private void nextRequest() {
+        SecurityContextHolder.clearContext();
+        request = new MockHttpServletRequest();
+        response = new MockHttpServletResponse();
+        chain = new MockFilterChain();
+    }
+
+    @Test
+    public void repeatedRequestsResolveAndRecordTheUserOnce() throws Exception {
+        final UserI user = enabledUser();
+        when(userResolver.resolveExisting(USERNAME, PROVIDER)).thenReturn(user);
+        final String token = sign(signingKey, validClaims().build());
+
+        for (int i = 0; i < 3; i++) {
+            nextRequest();
+            bearer(token);
+            doFilter();
+            assertNotNull("chain should be invoked", chain.getRequest());
+            assertTrue(currentAuth() instanceof OpenIdAuthToken);
+        }
+
+        verify(userResolver, times(1)).resolveExisting(USERNAME, PROVIDER);
+        verify(eventPublisher, times(1)).publishAuthenticationSuccess(org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    public void concurrentRequestsShareOneResolution() throws Exception {
+        final UserI user = enabledUser();
+        final AtomicInteger resolutions = new AtomicInteger();
+        when(userResolver.resolveExisting(USERNAME, PROVIDER)).thenAnswer(invocation -> {
+            resolutions.incrementAndGet();
+            Thread.sleep(300); // long enough for every other request to arrive while this one resolves
+            return user;
+        });
+        final String token = sign(signingKey, validClaims().build());
+        final int requests = 8;
+        final CountDownLatch start = new CountDownLatch(1);
+        final ExecutorService pool = Executors.newFixedThreadPool(requests);
+        try {
+            final List<Future<Boolean>> outcomes = new ArrayList<>();
+            for (int i = 0; i < requests; i++) {
+                outcomes.add(pool.submit(() -> {
+                    final MockHttpServletRequest concurrentRequest = new MockHttpServletRequest();
+                    concurrentRequest.addHeader("Authorization", "Bearer " + token);
+                    final MockFilterChain concurrentChain = new MockFilterChain();
+                    start.await();
+                    try {
+                        filter.doFilter(concurrentRequest, new MockHttpServletResponse(), concurrentChain);
+                        return concurrentChain.getRequest() != null;
+                    } finally {
+                        SecurityContextHolder.clearContext();
+                    }
+                }));
+            }
+            start.countDown();
+            for (final Future<Boolean> outcome : outcomes) {
+                assertTrue("every request should authenticate", outcome.get(10, TimeUnit.SECONDS));
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+
+        assertEquals(1, resolutions.get());
+    }
+
+    @Test
+    public void differentIdentitiesAreResolvedSeparately() throws Exception {
+        final UserI alice = enabledUser();
+        final UserI bob = enabledUser();
+        when(userResolver.resolveExisting(USERNAME, PROVIDER)).thenReturn(alice);
+        when(userResolver.resolveExisting("keycloak_bob", PROVIDER)).thenReturn(bob);
+
+        bearer(sign(signingKey, validClaims().build()));
+        doFilter();
+        nextRequest();
+        bearer(sign(signingKey, validClaims().subject("bob").build()));
+        doFilter();
+
+        assertSame(bob, currentAuth().getPrincipal());
+        verify(userResolver).resolveExisting(USERNAME, PROVIDER);
+        verify(userResolver).resolveExisting("keycloak_bob", PROVIDER);
+    }
+
+    @Test
+    public void aDenialIsNotReused() throws Exception {
+        final UserI user = enabledUser();
+        when(userResolver.resolveExisting(USERNAME, PROVIDER))
+                .thenThrow(new UsernameAuthMappingNotFoundException(USERNAME, XdatUserAuthService.OPENID, PROVIDER, null, null, null))
+                .thenReturn(user);
+        final String token = sign(signingKey, validClaims().build());
+
+        bearer(token);
+        doFilter();
+        assertEquals(HttpServletResponse.SC_FORBIDDEN, response.getStatus());
+
+        nextRequest();
+        bearer(token);
+        doFilter();
+        assertNotNull("the next request should resolve again and authenticate", chain.getRequest());
+    }
+
+    @Test
+    public void anAccountThatCouldNotBeLoadedIsUnavailableNotForbidden() throws Exception {
+        when(userResolver.resolveExisting(USERNAME, PROVIDER))
+                .thenThrow(new AccountUnavailableException("could not be loaded"));
+        bearer(sign(signingKey, validClaims().build()));
+
+        doFilter();
+
+        assertEquals(HttpServletResponse.SC_SERVICE_UNAVAILABLE, response.getStatus());
+        assertNull("chain must not be invoked", chain.getRequest());
+        assertNull(currentAuth());
+        verify(userResolver, never()).linkExistingIfConfigured(PROVIDER, AuthPath.BEARER, USERNAME);
+        verify(userResolver, never()).createUser(org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.any());
     }
 
     // ---- which usernamePattern pairs can never match --------------------------------------------

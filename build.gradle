@@ -74,6 +74,7 @@ dependencies {
     implementation "org.springframework.security.oauth:spring-security-oauth2"
     implementation "org.springframework.security:spring-security-jwt"
     implementation "org.apache.commons:commons-lang3"
+    implementation "com.google.guava:guava"
     implementation "commons-io:commons-io"
     implementation "org.slf4j:slf4j-api"
     implementation("turbine:turbine") {

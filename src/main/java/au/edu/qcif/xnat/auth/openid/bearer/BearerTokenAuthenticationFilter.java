@@ -1,5 +1,6 @@
 package au.edu.qcif.xnat.auth.openid.bearer;
 
+import au.edu.qcif.xnat.auth.openid.AccountUnavailableException;
 import au.edu.qcif.xnat.auth.openid.OpenIdAccountPolicy;
 import au.edu.qcif.xnat.auth.openid.OpenIdAuthPlugin;
 import au.edu.qcif.xnat.auth.openid.OpenIdConnectUserDetails;
@@ -15,6 +16,10 @@ import au.edu.qcif.xnat.auth.openid.jwt.JwtValidationException;
 import au.edu.qcif.xnat.auth.openid.jwt.JwtValidator;
 import au.edu.qcif.xnat.auth.openid.jwt.JwtValidatorRegistry;
 import au.edu.qcif.xnat.auth.openid.tokens.OpenIdAuthRequestToken;
+import com.google.common.base.Throwables;
+import com.google.common.cache.Cache;
+import com.google.common.cache.CacheBuilder;
+import com.google.common.util.concurrent.UncheckedExecutionException;
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
 import lombok.extern.slf4j.Slf4j;
@@ -43,8 +48,10 @@ import javax.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.lang.reflect.Field;
 import java.text.ParseException;
+import java.time.Duration;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -67,8 +74,10 @@ import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.USERNAME_PATTE
  *   <li>Peek the unverified {@code iss}, route it to a configured provider, and validate the token
  *       with that provider's keys. A bad/expired/wrong-issuer/unknown-issuer token → <b>401</b>.</li>
  *   <li>Run the provider's bearer claim gates; a gate failure → <b>403</b>.</li>
- *   <li>Resolve (and optionally auto-create) the XNAT user; a missing mapping with auto-create off,
- *       a disabled or locked account, or an unresolvable identity → <b>403</b>.</li>
+ *   <li>Resolve (and optionally auto-create) the XNAT user, or reuse the one resolved for this identity
+ *       within the last {@link #USER_CACHE_TTL}; a missing mapping with auto-create off, a disabled or
+ *       locked account, or an unresolvable identity → <b>403</b>; a mapped account that could not be
+ *       loaded → <b>503</b>.</li>
  *   <li>On success, set the {@link SecurityContextHolder} authentication and continue the chain.</li>
  * </ol>
  *
@@ -138,6 +147,12 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
     /** The placeholders whose value cannot be equal under two providers. */
     private static final Pattern UNMATCHABLE_PLACEHOLDER = Pattern.compile("\\[(providerId|sub)]");
 
+    /**
+     * How long a resolved XNAT user is reused for its identity, and so how long an account disabled or
+     * locked in XNAT can still be accepted on this path.
+     */
+    static final Duration USER_CACHE_TTL = Duration.ofSeconds(30);
+
     private static String resolveSessionMgmtFilterAppliedKey() {
         try {
             final Field field = SessionManagementFilter.class.getDeclaredField("FILTER_APPLIED");
@@ -161,6 +176,19 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
     private final OpenIdAccountPolicy _accountPolicy;
     private final AuthenticationEventPublisher _eventPublisher;
     private final ProtectedResourceMetadata _resourceMetadata;
+    /**
+     * Resolved XNAT users by {@code (providerId, username)}. Loading one ({@code XdatUserAuthService}'s
+     * transactional lookup, which builds the full {@code XDATUser}) holds one pooled database connection
+     * while it takes a second. Loaded once per request, a burst such as a viewer fetching every image in
+     * a series puts as many loads in flight as the pool has connections, and each holds one connection
+     * and waits for another until the pool times out. {@link Cache#get(Object, java.util.concurrent.Callable)}
+     * runs one load per key and makes concurrent callers wait for it. Sharing the user object across
+     * requests is what a session-backed login does too.
+     */
+    private final Cache<Map.Entry<String, String>, UserI> _users = CacheBuilder.newBuilder()
+            .expireAfterWrite(USER_CACHE_TTL)
+            .maximumSize(1_000)
+            .build();
     /** Guards against the repeated refresh events a parent/child context hierarchy produces. */
     private final AtomicBoolean _configReported = new AtomicBoolean();
 
@@ -428,9 +456,13 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
             return;
         }
 
-        final UserI xdatUser = resolveUser(providerId, user, response);
-        if (xdatUser == null) {
-            return; // resolveUser already wrote the 403
+        final AtomicBoolean loaded = new AtomicBoolean();
+        final UserI xdatUser;
+        try {
+            xdatUser = cachedUser(providerId, user, loaded);
+        } catch (final Rejection e) {
+            deny(response, e.status, e.getMessage());
+            return;
         }
         if (!xdatUser.isEnabled()) {
             forbidden(response, "the XNAT account for this identity is not enabled");
@@ -450,7 +482,9 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
 
         final Authentication authentication = new BearerAuthToken(xdatUser, providerId);
         SecurityContextHolder.getContext().setAuthentication(authentication);
-        recordSuccessfulAuthentication(user.getUsername(), xdatUser, providerId, request);
+        if (loaded.get()) {
+            recordSuccessfulAuthentication(user.getUsername(), xdatUser, providerId, request);
+        }
         log.debug("Bearer token authenticated user '{}' for provider '{}'", xdatUser.getUsername(), providerId);
         // Run the rest of the chain behind a wrapper that refuses to create a container session, so
         // downstream filters that call request.getSession() (e.g. XNAT's XnatExpiredPasswordFilter)
@@ -469,10 +503,11 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
     /**
      * Mirrors the interactive path's success-side bookkeeping: publishes an authentication-success
      * event (so XNAT listeners such as failed-login-counter reset and last-login tracking fire) and
-     * writes an XNAT access-log entry. Audit/event failures must never turn a validly authenticated
-     * request into a 500, so they are logged and swallowed. The access logger reads
-     * {@code request.getSession(false)} only when session tracking is on, which is {@code null} here,
-     * so it creates no session.
+     * writes an XNAT access-log entry. Like the interactive path's, it runs when the user is loaded, not
+     * on every request that reuses it; XNAT logs each request separately. Audit/event failures must
+     * never turn a validly authenticated request into a 500, so they are logged and swallowed. The
+     * access logger reads {@code request.getSession(false)} only when session tracking is on, which is
+     * {@code null} here, so it creates no session.
      */
     private void recordSuccessfulAuthentication(final String requesterUsername, final UserI xdatUser,
                                                 final String providerId, final HttpServletRequest request) {
@@ -497,17 +532,42 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
     }
 
     /**
+     * The XNAT user for this identity, from {@link #_users} or resolved now. {@code loaded} is set when
+     * this call did the resolving. A {@link Rejection} is not cached, but callers waiting on the same
+     * resolution receive it too.
+     */
+    private UserI cachedUser(final String providerId, final OpenIdConnectUserDetails user, final AtomicBoolean loaded)
+            throws Rejection {
+        try {
+            return _users.get(Map.entry(providerId, user.getUsername()), () -> {
+                loaded.set(true);
+                return resolveUser(providerId, user);
+            });
+        } catch (final ExecutionException | UncheckedExecutionException e) {
+            Throwables.throwIfInstanceOf(e.getCause(), Rejection.class);
+            Throwables.throwIfUnchecked(e.getCause());
+            throw new IllegalStateException(e.getCause());
+        }
+    }
+
+    /**
      * Looks up the mapped XNAT user; on a miss, links to an existing account or auto-creates one when
-     * either is configured. Writes 403 and returns null on failure.
+     * either is configured.
      *
      * <p>Linking is attempted before auto-creation, deliberately: when both are enabled, attaching this
      * identity to the account the person already has is always preferable to provisioning a second,
      * permissionless duplicate for the same human.</p>
+     *
+     * @throws Rejection with 403 when the identity has no account and none can be linked or created, or
+     *                   503 when its account could not be loaded.
      */
-    private UserI resolveUser(final String providerId, final OpenIdConnectUserDetails user,
-                              final HttpServletResponse response) throws IOException {
+    private UserI resolveUser(final String providerId, final OpenIdConnectUserDetails user) throws Rejection {
         try {
             return _userResolver.resolveExisting(user.getUsername(), providerId);
+        } catch (final AccountUnavailableException e) {
+            log.warn("Could not load the XNAT account for '{}' on provider '{}'", user.getUsername(), providerId, e);
+            throw new Rejection(HttpServletResponse.SC_SERVICE_UNAVAILABLE,
+                                "the XNAT account for this identity could not be loaded");
         } catch (final UsernameAuthMappingNotFoundException notFound) {
             final UserI linked;
             try {
@@ -518,8 +578,8 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
                 // silently become a duplicate account for someone who already has one.
                 log.warn("Failed to link '{}' on provider '{}' to an existing XNAT account",
                         user.getUsername(), providerId, e);
-                forbidden(response, "could not link this identity to an existing XNAT account");
-                return null;
+                throw new Rejection(HttpServletResponse.SC_FORBIDDEN,
+                                    "could not link this identity to an existing XNAT account");
             }
             if (linked != null) {
                 return linked;
@@ -527,16 +587,25 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
             if (!isForceUserCreate(providerId)) {
                 log.info("No XNAT account mapped to '{}' for provider '{}' and auto-create is off; denying",
                         user.getUsername(), providerId);
-                forbidden(response, "no XNAT account is mapped to this OpenID identity");
-                return null;
+                throw new Rejection(HttpServletResponse.SC_FORBIDDEN, "no XNAT account is mapped to this OpenID identity");
             }
             try {
                 return _userResolver.createUser(providerId, user);
             } catch (final AuthenticationException e) {
                 log.warn("Failed to auto-create an XNAT account for '{}' on the bearer path", user.getUsername(), e);
-                forbidden(response, "could not provision an XNAT account for this identity");
-                return null;
+                throw new Rejection(HttpServletResponse.SC_FORBIDDEN,
+                                    "could not provision an XNAT account for this identity");
             }
+        }
+    }
+
+    /** A user resolution that failed with this status and message for the caller. */
+    private static final class Rejection extends Exception {
+        private final int status;
+
+        private Rejection(final int status, final String message) {
+            super(message, null, false, false);
+            this.status = status;
         }
     }
 
@@ -566,7 +635,11 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
     }
 
     private void forbidden(final HttpServletResponse response, final String message) throws IOException {
+        deny(response, HttpServletResponse.SC_FORBIDDEN, message);
+    }
+
+    private void deny(final HttpServletResponse response, final int status, final String message) throws IOException {
         SecurityContextHolder.clearContext();
-        response.sendError(HttpServletResponse.SC_FORBIDDEN, message);
+        response.sendError(status, message);
     }
 }
