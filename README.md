@@ -398,9 +398,12 @@ no session, and may be cached for five minutes. A `401` from the bearer path the
 (RFC 9728 section 5.1).
 
 **`resource`** is the one of `siteUrl`, `openid.discovery.apiUrl` and `openid.discovery.webUrl`
-whose host is the host of the request and whose path is the path the request names. It is never
+whose host is the host of the request and whose path is the path the request names; when two of
+them differ only in scheme or port, the one matching the request's scheme and port wins. It is never
 built from the request, so a forged `Host` header cannot choose it; a request for any other host
-falls through. `siteUrl` is the provider properties' `siteUrl`, or XNAT's site URL when that is not
+falls through. The host is the request's `Host` header, so a proxy in front of XNAT must pass it
+through unchanged (in nginx, `proxy_set_header Host $host`): otherwise the document falls through to
+XNAT's login redirect, and bearer `401`s carry no `resource_metadata`. `siteUrl` is the provider properties' `siteUrl`, or XNAT's site URL when that is not
 set. If XNAT runs under a context path such as `/xnat`, RFC 9728 puts the document at
 `https://host/.well-known/oauth-protected-resource/xnat`, outside the webapp: the proxy in front of
 XNAT has to route that path to `/xnat/.well-known/oauth-protected-resource/xnat`, which the plugin

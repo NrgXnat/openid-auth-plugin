@@ -15,6 +15,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.TreeMap;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.ISSUER;
@@ -61,7 +62,8 @@ public class ProtectedResourceMetadata {
 
     /**
      * The configured URL that a request for the well-known document addresses, or empty if discovery
-     * is off or the request's host and path match none of them.
+     * is off or the request's host and path match none of them. When several match, the one with the
+     * request's scheme and port wins, else the first.
      *
      * @param suffix the path after {@link #WELL_KNOWN_PATH}: the resource's path in the RFC 9728 form,
      *               or empty when the document was requested inside the webapp's context path.
@@ -71,11 +73,19 @@ public class ProtectedResourceMetadata {
             return Optional.empty();
         }
         final String path = StringUtils.isEmpty(suffix) ? request.getContextPath() : suffix;
-        return configuredUrls()
+        final List<URI> matches = configuredUrls()
                 .filter(url -> StringUtils.equalsIgnoreCase(url.getHost(), request.getServerName()))
                 .filter(url -> StringUtils.stripEnd(url.getPath(), "/").equals(StringUtils.stripEnd(path, "/")))
-                .map(ProtectedResourceMetadata::normalize)
-                .findFirst();
+                .collect(Collectors.toList());
+        return matches.stream()
+                .filter(url -> StringUtils.equalsIgnoreCase(url.getScheme(), request.getScheme()) && port(url) == request.getServerPort())
+                .findFirst()
+                .or(() -> matches.stream().findFirst())
+                .map(ProtectedResourceMetadata::normalize);
+    }
+
+    private static int port(final URI url) {
+        return url.getPort() != -1 ? url.getPort() : "https".equalsIgnoreCase(url.getScheme()) ? 443 : 80;
     }
 
     /** The well-known URL of the document describing the site this request reached, for {@code WWW-Authenticate}. */

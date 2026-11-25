@@ -53,6 +53,13 @@ public class ProtectedResourceMetadataTest {
         return request;
     }
 
+    private static MockHttpServletRequest request(final String host, final String contextPath, final String scheme, final int port) {
+        final MockHttpServletRequest request = request(host, contextPath);
+        request.setScheme(scheme);
+        request.setServerPort(port);
+        return request;
+    }
+
     @Test
     public void isDisabledUnlessSwitchedOn() {
         props.remove("openid.discovery.enabled");
@@ -145,6 +152,20 @@ public class ProtectedResourceMetadataTest {
 
         assertEquals(Optional.of("https://xnat.example"), metadata.resourceFor(request("XNAT.example", ""), ""));
         assertEquals(Optional.of("https://xnat-api.example"), metadata.resourceFor(request("xnat-api.example", ""), ""));
+    }
+
+    @Test
+    public void resourcePrefersTheUrlWithTheRequestSchemeAndPort() {
+        lenient().when(plugin.getSiteUrl()).thenReturn("http://xnat.example");
+        props.setProperty("openid.discovery.webUrl", "https://xnat.example");
+        props.setProperty("openid.discovery.apiUrl", "https://xnat.example:8443");
+        final ProtectedResourceMetadata metadata = new ProtectedResourceMetadata(plugin);
+
+        assertEquals(Optional.of("https://xnat.example"), metadata.resourceFor(request("xnat.example", "", "https", 443), ""));
+        assertEquals(Optional.of("https://xnat.example:8443"), metadata.resourceFor(request("xnat.example", "", "https", 8443), ""));
+        assertEquals(Optional.of("http://xnat.example"), metadata.resourceFor(request("xnat.example", "", "http", 80), ""));
+        // No exact match, as behind a proxy that hides the original scheme: the first configured URL
+        assertEquals(Optional.of("http://xnat.example"), metadata.resourceFor(request("xnat.example", "", "http", 8080), ""));
     }
 
     @Test

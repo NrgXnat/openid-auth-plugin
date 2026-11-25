@@ -11,7 +11,7 @@ import org.nrg.xnat.security.BaseXnatSecurityExtension;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.oauth2.client.filter.OAuth2ClientContextFilter;
 import org.springframework.security.web.authentication.preauth.AbstractPreAuthenticatedProcessingFilter;
-import org.springframework.security.web.context.SecurityContextPersistenceFilter;
+import org.springframework.security.web.header.HeaderWriterFilter;
 import org.springframework.security.web.session.InvalidSessionStrategy;
 import org.springframework.stereotype.Component;
 
@@ -59,10 +59,11 @@ public class OpenIdSecurityExtension extends BaseXnatSecurityExtension {
                     http.addFilterAfter(new OAuth2ClientContextFilter(), AbstractPreAuthenticatedProcessingFilter.class)
                             .addFilterAfter(openIdConnectFilter, OAuth2ClientContextFilter.class);
                 }
-                // Ahead of the security context and session handling, so the public metadata document
-                // is answered for anonymous callers without a login redirect or a session.
+                // After XNAT's security headers are written and ahead of authentication and session
+                // handling, so the public metadata document carries those headers and is answered for
+                // anonymous callers without a login redirect or a session.
                 if (protectedResourceMetadata.isEnabled()) {
-                    http.addFilterBefore(protectedResourceMetadataFilter, SecurityContextPersistenceFilter.class);
+                    http.addFilterAfter(protectedResourceMetadataFilter, HeaderWriterFilter.class);
                 }
                 configureLogoutAndTimeout(http);
             }

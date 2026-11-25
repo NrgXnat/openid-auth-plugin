@@ -17,8 +17,9 @@ import static au.edu.qcif.xnat.auth.openid.discovery.ProtectedResourceMetadata.W
 
 /**
  * Answers {@code GET} and {@code HEAD} for the RFC 9728 well-known document, and passes every other
- * request on. It sits ahead of the security context and session handling in the security chain, so
- * it answers anonymous callers without a login redirect and without creating a session.
+ * request on. It sits right after XNAT's security headers are written and ahead of authentication and
+ * session handling, so it answers anonymous callers without a login redirect and without creating a
+ * session.
  */
 @Component
 public class ProtectedResourceMetadataFilter extends OncePerRequestFilter {
