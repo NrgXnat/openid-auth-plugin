@@ -62,10 +62,23 @@ public final class GateConfig {
         return path == AuthPath.BEARER && "audCheck".equals(gate);
     }
 
+    /**
+     * The full name of the setting that {@link #value(String)} reads {@code field} from: the path-scoped key
+     * when it is set, else the shared one, as written in {@code openid-provider.properties}.
+     */
+    public String key(final String field) {
+        return "openid." + providerId + "." + scoped(field);
+    }
+
     /** Path-scoped value ({@code openid.{p}.{path}.{field}}), falling back to the shared
      * per-provider value ({@code openid.{p}.{field}}). */
     private String resolve(final String field) {
-        final String perPath = plugin.getProperty(providerId, path.prefix() + "." + field);
-        return StringUtils.isNotBlank(perPath) ? perPath : plugin.getProperty(providerId, field);
+        return plugin.getProperty(providerId, scoped(field));
+    }
+
+    /** {@code {path}.{field}} when that path-scoped setting is set, else the shared {@code field}. */
+    private String scoped(final String field) {
+        final String perPath = path.prefix() + "." + field;
+        return StringUtils.isNotBlank(plugin.getProperty(providerId, perPath)) ? perPath : field;
     }
 }

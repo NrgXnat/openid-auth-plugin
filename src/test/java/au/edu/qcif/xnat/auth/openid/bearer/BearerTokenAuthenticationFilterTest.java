@@ -7,6 +7,8 @@ import au.edu.qcif.xnat.auth.openid.discovery.ProtectedResourceMetadata;
 import au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant;
 import au.edu.qcif.xnat.auth.openid.gate.AuthPath;
 import au.edu.qcif.xnat.auth.openid.gate.ClaimGateFactory;
+import au.edu.qcif.xnat.auth.openid.gate.RoleSync;
+import au.edu.qcif.xnat.auth.openid.gate.TokenContext;
 import au.edu.qcif.xnat.auth.openid.jwt.JwtValidator;
 import au.edu.qcif.xnat.auth.openid.jwt.JwtValidatorRegistry;
 import au.edu.qcif.xnat.auth.openid.tokens.OpenIdAuthToken;
@@ -56,6 +58,8 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -84,6 +88,7 @@ public class BearerTokenAuthenticationFilterTest {
     @Mock private OpenIdUserResolver userResolver;
     @Mock private SiteConfigPreferences siteConfigPreferences;
     @Mock private AuthenticationEventPublisher eventPublisher;
+    @Mock private RoleSync roleSync;
 
     private BearerTokenAuthenticationFilter filter;
     private MockHttpServletRequest request;
@@ -111,10 +116,14 @@ public class BearerTokenAuthenticationFilterTest {
         final JwtValidatorRegistry validators = new JwtValidatorRegistry(
                 Collections.singletonMap(PROVIDER, new JwtValidator(ISSUER, trustedSource, JwtValidator.ACCESS_TOKEN_TYPES)));
 
+        // Role sync hands back the user it was given, unless a test says otherwise.
+        lenient().when(roleSync.apply(eq(PROVIDER), eq(AuthPath.BEARER), any(TokenContext.class), any(UserI.class)))
+                .thenAnswer(invocation -> invocation.getArgument(3));
+
         final OpenIdAccountPolicy accountPolicy = new OpenIdAccountPolicy(plugin, siteConfigPreferences);
         filter = new BearerTokenAuthenticationFilter(plugin, new BearerTokenExtractor(),
-                new BearerProviderResolver(plugin), validators, new ClaimGateFactory(plugin), userResolver,
-                accountPolicy, eventPublisher, new ProtectedResourceMetadata(plugin));
+                new BearerProviderResolver(plugin), validators, new ClaimGateFactory(plugin), roleSync,
+                userResolver, accountPolicy, eventPublisher, new ProtectedResourceMetadata(plugin));
 
         request = new MockHttpServletRequest();
         response = new MockHttpServletResponse();
@@ -452,6 +461,24 @@ public class BearerTokenAuthenticationFilterTest {
         assertEquals(HttpServletResponse.SC_FORBIDDEN, response.getStatus());
         assertNull(chain.getRequest());
         assertNull(currentAuth());
+        verify(roleSync, never()).apply(any(), any(), any(), any());
+    }
+
+    @Test
+    public void lockedAccountIsForbidden() throws Exception {
+        final UserI locked = mock(UserI.class);
+        lenient().when(locked.getUsername()).thenReturn(USERNAME);
+        when(locked.isEnabled()).thenReturn(true);
+        when(locked.isAccountNonLocked()).thenReturn(false);
+        when(userResolver.resolveExisting(USERNAME, PROVIDER)).thenReturn(locked);
+        bearer(sign(signingKey, validClaims().build()));
+
+        doFilter();
+
+        assertEquals(HttpServletResponse.SC_FORBIDDEN, response.getStatus());
+        assertNull(chain.getRequest());
+        assertNull(currentAuth());
+        verify(roleSync, never()).apply(any(), any(), any(), any());
     }
 
     @Test
@@ -494,6 +521,39 @@ public class BearerTokenAuthenticationFilterTest {
         assertEquals(HttpServletResponse.SC_FORBIDDEN, response.getStatus());
         assertNull("chain must not be invoked", chain.getRequest());
         assertNull(currentAuth());
+        verify(roleSync, never()).apply(any(), any(), any(), any());
+    }
+
+    // ---- role sync -----------------------------------------------------------------------------
+
+    @Test
+    public void theUserRoleSyncReturnsBecomesThePrincipal() throws Exception {
+        // Role sync reloads the user when it changes a role, so the request runs with the new roles.
+        final UserI resolved = enabledUser();
+        final UserI reloaded = enabledUser();
+        when(userResolver.resolveExisting(USERNAME, PROVIDER)).thenReturn(resolved);
+        when(roleSync.apply(eq(PROVIDER), eq(AuthPath.BEARER), any(TokenContext.class), eq(resolved)))
+                .thenReturn(reloaded);
+        bearer(sign(signingKey, validClaims().claim("groups", Collections.singletonList("xnat-admin")).build()));
+
+        doFilter();
+
+        assertNotNull("chain should be invoked", chain.getRequest());
+        assertSame(reloaded, currentAuth().getPrincipal());
+    }
+
+    @Test
+    public void roleSyncSeesTheClaimsOfTheValidatedToken() throws Exception {
+        final UserI user = enabledUser();
+        when(userResolver.resolveExisting(USERNAME, PROVIDER)).thenReturn(user);
+        bearer(sign(signingKey, validClaims().claim("groups", Collections.singletonList("xnat-admin")).build()));
+
+        doFilter();
+
+        verify(roleSync).apply(eq(PROVIDER), eq(AuthPath.BEARER),
+                org.mockito.ArgumentMatchers.argThat(token ->
+                        Collections.singletonList("xnat-admin").equals(token.claims().getClaim("groups"))),
+                any(UserI.class));
     }
 
     @Test

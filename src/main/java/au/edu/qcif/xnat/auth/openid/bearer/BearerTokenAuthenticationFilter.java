@@ -9,6 +9,7 @@ import au.edu.qcif.xnat.auth.openid.gate.AuthPath;
 import au.edu.qcif.xnat.auth.openid.gate.ClaimGate;
 import au.edu.qcif.xnat.auth.openid.gate.ClaimGateException;
 import au.edu.qcif.xnat.auth.openid.gate.ClaimGateFactory;
+import au.edu.qcif.xnat.auth.openid.gate.RoleSync;
 import au.edu.qcif.xnat.auth.openid.gate.GateConfig;
 import au.edu.qcif.xnat.auth.openid.gate.TokenContext;
 import au.edu.qcif.xnat.auth.openid.jwt.JwtValidationException;
@@ -157,6 +158,7 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
     private final BearerProviderResolver _providerResolver;
     private final JwtValidatorRegistry _validators;
     private final ClaimGateFactory _gateFactory;
+    private final RoleSync _roleSync;
     private final OpenIdUserResolver _userResolver;
     private final OpenIdAccountPolicy _accountPolicy;
     private final AuthenticationEventPublisher _eventPublisher;
@@ -181,6 +183,7 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
         _providerResolver = new BearerProviderResolver(plugin);
         _validators = validators;
         _gateFactory = new ClaimGateFactory(plugin);
+        _roleSync = new RoleSync(plugin);
         _userResolver = new OpenIdUserResolver(plugin, userAuthService, notifier);
         _accountPolicy = new OpenIdAccountPolicy(plugin, siteConfigPreferences);
         _eventPublisher = eventPublisher;
@@ -202,6 +205,7 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
         if (_configReported.compareAndSet(false, true)) {
             warnIfAudienceGateUnconfigured();
             warnIfLinkExistingCannotMatch();
+            reportRoleSyncSettings();
         }
     }
 
@@ -215,11 +219,27 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
                                     final OpenIdAccountPolicy accountPolicy,
                                     final AuthenticationEventPublisher eventPublisher,
                                     final ProtectedResourceMetadata resourceMetadata) {
+        this(plugin, extractor, providerResolver, validators, gateFactory, new RoleSync(plugin), userResolver,
+             accountPolicy, eventPublisher, resourceMetadata);
+    }
+
+    /** Test seam: as above, with the role sync injected too. */
+    BearerTokenAuthenticationFilter(final OpenIdAuthPlugin plugin,
+                                    final BearerTokenExtractor extractor,
+                                    final BearerProviderResolver providerResolver,
+                                    final JwtValidatorRegistry validators,
+                                    final ClaimGateFactory gateFactory,
+                                    final RoleSync roleSync,
+                                    final OpenIdUserResolver userResolver,
+                                    final OpenIdAccountPolicy accountPolicy,
+                                    final AuthenticationEventPublisher eventPublisher,
+                                    final ProtectedResourceMetadata resourceMetadata) {
         _plugin = plugin;
         _extractor = extractor;
         _providerResolver = providerResolver;
         _validators = validators;
         _gateFactory = gateFactory;
+        _roleSync = roleSync;
         _userResolver = userResolver;
         _accountPolicy = accountPolicy;
         _eventPublisher = eventPublisher;
@@ -242,6 +262,15 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
                         providerId, providerId, providerId);
             }
         }
+    }
+
+    /**
+     * Has role sync say at startup what it will do and what is wrong with its settings, so mistakes are
+     * reported once here rather than at every sign-in. Like the {@code linkExisting} check below, it covers
+     * every enabled provider; the bearer path only for the providers this filter serves.
+     */
+    private void reportRoleSyncSettings() {
+        _roleSync.reportSettings(_providerResolver.providerIds());
     }
 
     /**
@@ -404,8 +433,9 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
             return;
         }
 
+        final TokenContext tokenContext = new TokenContext(claims, parsedJwt.getHeader().toJSONObject());
         try {
-            applyBearerClaimGates(providerId, new TokenContext(claims, parsedJwt.getHeader().toJSONObject()));
+            applyBearerClaimGates(providerId, tokenContext);
         } catch (final ClaimGateException e) {
             log.info("Bearer claim gate rejected token for provider '{}': {}", providerId, e.getMessage());
             forbidden(response, e.getMessage());
@@ -428,7 +458,7 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
             return;
         }
 
-        final UserI xdatUser = resolveUser(providerId, user, response);
+        UserI xdatUser = resolveUser(providerId, user, response);
         if (xdatUser == null) {
             return; // resolveUser already wrote the 403
         }
@@ -448,6 +478,7 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
             return;
         }
 
+        xdatUser = _roleSync.apply(providerId, AuthPath.BEARER, tokenContext, xdatUser);
         final Authentication authentication = new BearerAuthToken(xdatUser, providerId);
         SecurityContextHolder.getContext().setAuthentication(authentication);
         recordSuccessfulAuthentication(user.getUsername(), xdatUser, providerId, request);

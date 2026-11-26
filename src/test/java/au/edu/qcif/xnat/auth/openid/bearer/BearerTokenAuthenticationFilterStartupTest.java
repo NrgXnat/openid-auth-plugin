@@ -3,6 +3,7 @@ package au.edu.qcif.xnat.auth.openid.bearer;
 import au.edu.qcif.xnat.auth.openid.OpenIdAccountPolicy;
 import au.edu.qcif.xnat.auth.openid.OpenIdAuthPlugin;
 import au.edu.qcif.xnat.auth.openid.OpenIdUserResolver;
+import au.edu.qcif.xnat.auth.openid.gate.RoleSync;
 import au.edu.qcif.xnat.auth.openid.jwt.JwtValidatorRegistry;
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
@@ -14,6 +15,8 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnitRunner;
+import org.nrg.xdat.preferences.SiteConfigPreferences;
+import org.nrg.xdat.services.XdatUserAuthService;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.event.ContextRefreshedEvent;
 import org.springframework.security.authentication.AuthenticationEventPublisher;
@@ -21,6 +24,8 @@ import org.springframework.security.authentication.AuthenticationEventPublisher;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Properties;
+import java.util.concurrent.Executor;
 import java.util.stream.Collectors;
 
 import static org.junit.Assert.assertEquals;
@@ -44,6 +49,7 @@ public class BearerTokenAuthenticationFilterStartupTest {
     private static final String SOURCE   = "directory";
 
     @Mock private OpenIdAuthPlugin plugin;
+    @Mock private BearerProviderResolver providerResolver;
 
     private ListAppender<ILoggingEvent> appender;
     private Logger                      logger;
@@ -57,6 +63,7 @@ public class BearerTokenAuthenticationFilterStartupTest {
         appender = new ListAppender<>();
         appender.start();
         logger.addAppender(appender);
+        lenient().when(plugin.getProps()).thenReturn(new Properties());
     }
 
     @After
@@ -75,10 +82,27 @@ public class BearerTokenAuthenticationFilterStartupTest {
     /** A filter built through the test seam, so only the reporting under test runs. */
     private BearerTokenAuthenticationFilter filter() {
         return new BearerTokenAuthenticationFilter(plugin, mock(BearerTokenExtractor.class),
-                                                   mock(BearerProviderResolver.class), new JwtValidatorRegistry(Collections.emptyMap()),
+                                                   providerResolver, new JwtValidatorRegistry(Collections.emptyMap()),
                                                    null, mock(OpenIdUserResolver.class),
                                                    mock(OpenIdAccountPolicy.class),
                                                    mock(AuthenticationEventPublisher.class), null);
+    }
+
+    /** The warnings role sync writes, through its own logger, while {@code action} runs. */
+    private static List<String> roleSyncWarningsDuring(final Runnable action) {
+        final Logger roleSyncLogger = (Logger) LoggerFactory.getLogger(RoleSync.class);
+        final ListAppender<ILoggingEvent> captured = new ListAppender<>();
+        captured.start();
+        roleSyncLogger.addAppender(captured);
+        try {
+            action.run();
+        } finally {
+            roleSyncLogger.detachAppender(captured);
+        }
+        return captured.list.stream()
+                            .filter(event -> event.getLevel().equals(Level.WARN))
+                            .map(ILoggingEvent::getFormattedMessage)
+                            .collect(Collectors.toList());
     }
 
     private void providers(final String... ids) {
@@ -101,6 +125,34 @@ public class BearerTokenAuthenticationFilterStartupTest {
         filter().onApplicationEvent(mock(ContextRefreshedEvent.class));
 
         assertTrue("an unconfigured provider has nothing to report", appender.list.isEmpty());
+    }
+
+    @Test
+    public void theFilterXnatBuildsHasRoleSyncReportItsSettings() {
+        // Role sync writes its own report; RoleSyncTest covers what it says.
+        providers(PROVIDER);
+        property(PROVIDER, "roleSync.enabled", "true");
+        property(PROVIDER, "roleSync.mappings", "nocolon=Role");
+        final BearerTokenAuthenticationFilter built = new BearerTokenAuthenticationFilter(plugin,
+                mock(XdatUserAuthService.class), mock(SiteConfigPreferences.class),
+                mock(AuthenticationEventPublisher.class), new JwtValidatorRegistry(Collections.emptyMap()), null,
+                mock(Executor.class));
+
+        final List<String> warnings = roleSyncWarningsDuring(() -> built.onApplicationEvent(mock(ContextRefreshedEvent.class)));
+
+        assertTrue(warnings.toString(), warnings.stream().anyMatch(warning -> warning.contains("'nocolon=Role'")));
+    }
+
+    @Test
+    public void reportsRoleSyncOnTheBearerPathForTheProvidersThisFilterServes() {
+        providers(PROVIDER);
+        property(PROVIDER, "roleSync.enabled", "true");
+        property(PROVIDER, "roleSync.mappings", "nocolon=Role");
+        lenient().when(providerResolver.providerIds()).thenReturn(Collections.singleton(PROVIDER));
+
+        final List<String> warnings = roleSyncWarningsDuring(() -> filter().onApplicationEvent(mock(ContextRefreshedEvent.class)));
+
+        assertTrue(warnings.toString(), warnings.stream().anyMatch(warning -> warning.contains("on the bearer path")));
     }
 
     @Test

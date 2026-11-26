@@ -254,6 +254,37 @@ this per path**, because the expected type legitimately differs between the two 
 supported by the resolution rules but discouraged: a single value would be wrong for at least one
 path. Enabling the gate with no `expectedTypes` for a path rejects every token on it (fail-closed).
 
+### Role sync
+
+Keeps an OpenID user's XNAT roles in step with roles in their token, at every sign-in through either path. Each property can be set for both paths or for one (`openid.providerId.idToken.roleSync.mappings`, `openid.providerId.bearer.roleSync.enabled`); a path's own value replaces the shared one, and a blank one falls back to it.
+
+#### openid.`providerId`.roleSync.enabled
+
+`true` turns role sync on; defaults to `false`. Any other value, such as `yes` or `true` followed by a space, leaves it off and is reported at startup.
+
+#### openid.`providerId`.roleSync.mappings
+
+Comma-separated `<claim path>:<token role>=<XNAT role>` entries:
+
+```
+openid.keycloak.roleSync.mappings=resource_access.xnat.roles:xnat-admin=Administrator
+```
+
+- The claim path is dotted, as in `roleCheck.rolePath`.
+- The XNAT role must be one XNAT defines, matched exactly, case included. A role another plugin adds counts only if that plugin ships a role definition (`config/roles/*-role-definition.properties`). A role XNAT doesn't define is never added, though it is still removed.
+- Wrap a name in straight double quotes when it holds `,` `:` `=` or `.`: `"cognito:groups":admins=Administrator`, `groups:"cn=admins,ou=groups,dc=example,dc=org"=Administrator`. Quotes work only here, not in `roleCheck.rolePath`.
+- Spaces around an entry and its parts are ignored. Other whitespace or invisible characters (written as `\uXXXX` too), a stray or other kind of quote, an empty claim name, or a `=` or `,` outside quotes make the entry malformed.
+- Write other non-ASCII characters as `\uXXXX`, as in any properties file.
+
+At each sign-in a mapped role is added when one of its mappings matches the token, and removed when the token carries the claim path without it. A token without the claim path leaves the role alone, so one client's token doesn't undo what another's granted. A claim must hold a list of roles or a space-separated string; any other kind is treated as absent. Roles are never removed from XNAT's primary administrator or its received-file user. A change that fails is logged and the sign-in goes ahead; if XNAT can't read the user's roles, the sign-in fails.
+
+Role sync logs to `openid.log`; every line starts `Role sync`. At startup it logs at `INFO` what each path manages and at `WARN` each mistake in its settings, naming the setting to fix. At sign-in it logs each change at `INFO`, a failure at `WARN`, and roles it left alone at `DEBUG`; a warning that would repeat at every sign-in is written once, and its repeats go to `DEBUG`. To see `DEBUG`, set `<logger name="au.edu.qcif.xnat.auth.openid.gate.RoleSync" level="DEBUG"/>` in the plugin's logging configuration.
+
+Two things about the provider's tokens matter:
+
+- **Another client's token can carry the claim path with only some of the user's roles**, as Keycloak's do when "Full scope allowed" is off, and a bearer request with one removes the mapped role. Put the role in scope for every client whose tokens reach XNAT, or map it on the ID-token path only.
+- **A provider can leave the claim out when the user has no roles there**, as Keycloak does, so a user whose last role is taken away keeps the XNAT role. Turn on `roleCheck` with the same `rolePath` and a role every XNAT user holds.
+
 ### Bearer-token authentication
 
 In addition to the interactive login flow, the plugin can authenticate REST requests that present
