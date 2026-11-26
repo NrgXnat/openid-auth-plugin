@@ -7,7 +7,10 @@ import org.apache.commons.io.IOUtils;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.MockedStatic;
 import org.nrg.framework.services.SerializerService;
+import org.nrg.xdat.security.helpers.Users;
+import org.nrg.xft.security.UserI;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.http.HttpHeaders;
@@ -28,11 +31,14 @@ import java.util.Map;
 
 import static au.edu.qcif.xnat.auth.openid.OpenIdConnectFilterTestConfig.TEST_ACCESS_TOKEN;
 import static au.edu.qcif.xnat.auth.openid.OpenIdConnectFilterTestConfig.TEST_PROVIDER_ID;
+import static au.edu.qcif.xnat.auth.openid.OpenIdConnectFilterTestConfig.TEST_USERNAME;
 import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.ACCESS_TOKEN;
 import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.ID_TOKEN;
 import static com.github.tomakehurst.wiremock.client.WireMock.*;
 import static java.nio.charset.Charset.defaultCharset;
 import static org.junit.Assert.*;
+import static org.mockito.Mockito.mockStatic;
+import static org.mockito.Mockito.withSettings;
 
 @SuppressWarnings("deprecation")
 @RunWith(SpringJUnit4ClassRunner.class)
@@ -44,6 +50,7 @@ public class OpenIdConnectFilterTest {
 
     private OpenIdConnectFilter filter;
     private SerializerService   serializer;
+    private UserI               testUser;
 
     public OpenIdConnectFilterTest() {
         System.setProperty("xnat.home", System.getProperty("user.dir"));
@@ -57,6 +64,11 @@ public class OpenIdConnectFilterTest {
     @Autowired
     public void setSerializerService(final SerializerService serializerService) {
         serializer = serializerService;
+    }
+
+    @Autowired
+    public void setTestUser(final UserI user) {
+        testUser = user;
     }
 
     @Test
@@ -82,7 +94,11 @@ public class OpenIdConnectFilterTest {
 
         request.getSession().setAttribute(OpenIdAuthConstant.PROVIDER_ID, TEST_PROVIDER_ID);
 
-        final Authentication authentication = filter.attemptAuthentication(request, response);
+        final Authentication authentication;
+        try (final MockedStatic<Users> users = mockStatic(Users.class, withSettings().lenient())) {
+            users.when(() -> Users.getUser(TEST_USERNAME)).thenReturn(testUser);
+            authentication = filter.attemptAuthentication(request, response);
+        }
 
         assertNotNull(authentication);
         assertTrue(authentication instanceof OpenIdAuthToken);

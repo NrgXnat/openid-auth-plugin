@@ -1,5 +1,6 @@
 package au.edu.qcif.xnat.auth.openid.bearer;
 
+import au.edu.qcif.xnat.auth.openid.AccountUnavailableException;
 import au.edu.qcif.xnat.auth.openid.OpenIdAccountPolicy;
 import au.edu.qcif.xnat.auth.openid.OpenIdAuthPlugin;
 import au.edu.qcif.xnat.auth.openid.OpenIdUserResolver;
@@ -10,6 +11,7 @@ import au.edu.qcif.xnat.auth.openid.gate.ClaimGateFactory;
 import au.edu.qcif.xnat.auth.openid.jwt.JwtValidator;
 import au.edu.qcif.xnat.auth.openid.jwt.JwtValidatorRegistry;
 import au.edu.qcif.xnat.auth.openid.tokens.OpenIdAuthToken;
+import com.google.common.base.Ticker;
 import com.nimbusds.jose.JOSEObjectType;
 import com.nimbusds.jose.JWSAlgorithm;
 import com.nimbusds.jose.JWSHeader;
@@ -31,6 +33,7 @@ import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnitRunner;
 import org.nrg.xdat.exceptions.UsernameAuthMappingNotFoundException;
 import org.nrg.xdat.preferences.SiteConfigPreferences;
+import org.nrg.xdat.security.XDATUser;
 import org.nrg.xdat.services.XdatUserAuthService;
 import org.nrg.xft.security.UserI;
 import org.springframework.mock.web.MockFilterChain;
@@ -39,26 +42,42 @@ import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.security.authentication.AuthenticationEventPublisher;
 import org.springframework.security.authentication.AuthenticationServiceException;
 import org.springframework.security.core.Authentication;
+import org.springframework.security.core.GrantedAuthority;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 
+import javax.servlet.FilterChain;
 import javax.servlet.ServletRequest;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import javax.servlet.http.HttpSession;
+import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -506,6 +525,332 @@ public class BearerTokenAuthenticationFilterTest {
 
         assertNotNull("chain should be invoked", chain.getRequest());
         org.mockito.Mockito.verify(eventPublisher).publishAuthenticationSuccess(org.mockito.ArgumentMatchers.any());
+    }
+
+    // ---- reusing a resolved user ---------------------------------------------------------------
+
+    private void nextRequest() {
+        SecurityContextHolder.clearContext();
+        request = new MockHttpServletRequest();
+        response = new MockHttpServletResponse();
+        chain = new MockFilterChain();
+    }
+
+    @Test
+    public void repeatedRequestsResolveAndRecordTheUserOnce() throws Exception {
+        final UserI user = enabledUser();
+        when(userResolver.resolveExisting(USERNAME, PROVIDER)).thenReturn(user);
+        final String token = sign(signingKey, validClaims().build());
+
+        for (int i = 0; i < 3; i++) {
+            nextRequest();
+            bearer(token);
+            doFilter();
+            assertNotNull("chain should be invoked", chain.getRequest());
+            assertTrue(currentAuth() instanceof OpenIdAuthToken);
+        }
+
+        verify(userResolver, times(1)).resolveExisting(USERNAME, PROVIDER);
+        verify(eventPublisher, times(1)).publishAuthenticationSuccess(org.mockito.ArgumentMatchers.any());
+    }
+
+    /** Sends eight requests with {@code token} at once and asserts each authenticates and passes {@code downstream}. */
+    private void assertConcurrentRequestsAuthenticate(final String token, final FilterChain downstream) throws Exception {
+        final int requests = 8;
+        final CountDownLatch start = new CountDownLatch(1);
+        final ExecutorService pool = Executors.newFixedThreadPool(requests);
+        try {
+            final List<Future<Boolean>> outcomes = new ArrayList<>();
+            for (int i = 0; i < requests; i++) {
+                outcomes.add(pool.submit(() -> {
+                    final MockHttpServletRequest concurrentRequest = new MockHttpServletRequest();
+                    concurrentRequest.addHeader("Authorization", "Bearer " + token);
+                    final AtomicBoolean reached = new AtomicBoolean();
+                    start.await();
+                    try {
+                        filter.doFilter(concurrentRequest, new MockHttpServletResponse(), (req, res) -> {
+                            reached.set(true);
+                            downstream.doFilter(req, res);
+                        });
+                        return reached.get();
+                    } finally {
+                        SecurityContextHolder.clearContext();
+                    }
+                }));
+            }
+            start.countDown();
+            for (final Future<Boolean> outcome : outcomes) {
+                assertTrue("every request should authenticate", outcome.get(10, TimeUnit.SECONDS));
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    private BearerTokenAuthenticationFilter filterWithClock(final Ticker ticker) {
+        return new BearerTokenAuthenticationFilter(plugin, new BearerTokenExtractor(),
+                new BearerProviderResolver(plugin),
+                new JwtValidatorRegistry(Collections.singletonMap(PROVIDER,
+                        new JwtValidator(ISSUER, trustedSource, JwtValidator.ACCESS_TOKEN_TYPES))),
+                new ClaimGateFactory(plugin), userResolver, new OpenIdAccountPolicy(plugin, siteConfigPreferences),
+                eventPublisher, new ProtectedResourceMetadata(plugin), ticker);
+    }
+
+    @Test
+    public void aResolvedUserIsReusedUntilItsTimeToLiveAndThenLoadedAgain() throws Exception {
+        final AtomicLong nanos = new AtomicLong();
+        filter = filterWithClock(new Ticker() {
+            @Override
+            public long read() {
+                return nanos.get();
+            }
+        });
+        final UserI user = enabledUser();
+        when(userResolver.resolveExisting(USERNAME, PROVIDER)).thenReturn(user);
+        final String token = sign(signingKey, validClaims().build());
+
+        bearer(token);
+        doFilter();
+        nanos.addAndGet(BearerTokenAuthenticationFilter.USER_CACHE_TTL.minusSeconds(1).toNanos());
+        nextRequest();
+        bearer(token);
+        doFilter();
+        verify(userResolver, times(1)).resolveExisting(USERNAME, PROVIDER);
+
+        nanos.addAndGet(Duration.ofSeconds(2).toNanos());
+        nextRequest();
+        bearer(token);
+        doFilter();
+        assertNotNull("chain should be invoked", chain.getRequest());
+        verify(userResolver, times(2)).resolveExisting(USERNAME, PROVIDER);
+    }
+
+    /** Auto-creation, for one, sends mail on the request thread after reading the account. */
+    @Test
+    public void anAccountReadLongerAgoThanTheTimeToLiveIsResolvedAgain() throws Exception {
+        final AtomicLong nanos = new AtomicLong();
+        filter = filterWithClock(new Ticker() {
+            @Override
+            public long read() {
+                return nanos.get();
+            }
+        });
+        final UserI enabledThen = enabledUser();
+        final UserI disabledSince = mock(UserI.class);
+        lenient().when(disabledSince.getUsername()).thenReturn(USERNAME);
+        when(disabledSince.isEnabled()).thenReturn(false);
+        when(userResolver.resolveExisting(USERNAME, PROVIDER)).thenAnswer(invocation -> {
+            nanos.addAndGet(BearerTokenAuthenticationFilter.USER_CACHE_TTL.plusSeconds(1).toNanos());
+            return enabledThen;
+        }).thenReturn(disabledSince);
+        bearer(sign(signingKey, validClaims().build()));
+
+        doFilter();
+
+        assertEquals(HttpServletResponse.SC_FORBIDDEN, response.getStatus());
+        assertNull("chain must not be invoked", chain.getRequest());
+        verify(userResolver, times(2)).resolveExisting(USERNAME, PROVIDER);
+    }
+
+    @Test
+    public void concurrentRequestsShareOneResolution() throws Exception {
+        final UserI user = enabledUser();
+        final AtomicInteger resolutions = new AtomicInteger();
+        when(userResolver.resolveExisting(USERNAME, PROVIDER)).thenAnswer(invocation -> {
+            resolutions.incrementAndGet();
+            Thread.sleep(300); // long enough for every other request to arrive while this one resolves
+            return user;
+        });
+        assertConcurrentRequestsAuthenticate(sign(signingKey, validClaims().build()), (req, res) -> { });
+
+        assertEquals(1, resolutions.get());
+    }
+
+    /**
+     * XDATUser fills its authorities into a plain HashSet on first use. This user does the same, and a
+     * call that overlaps the filling sees a null element, as a corrupted HashSet does.
+     */
+    private static UserI userWithLazyAuthorities() {
+        final UserI user = mock(UserI.class);
+        lenient().when(user.getUsername()).thenReturn(USERNAME);
+        lenient().when(user.isEnabled()).thenReturn(true);
+        lenient().when(user.isAccountNonLocked()).thenReturn(true);
+        final List<GrantedAuthority> filled = List.of(new SimpleGrantedAuthority("ROLE_USER"));
+        final AtomicBoolean filling = new AtomicBoolean();
+        final AtomicBoolean done = new AtomicBoolean();
+        lenient().doAnswer(invocation -> {
+            if (done.get()) {
+                return filled;
+            }
+            if (!filling.compareAndSet(false, true)) {
+                return Arrays.asList(new SimpleGrantedAuthority("ROLE_USER"), null);
+            }
+            Thread.sleep(200);
+            done.set(true);
+            return filled;
+        }).when(user).getAuthorities();
+        return user;
+    }
+
+    @Test
+    public void concurrentRequestsBuildTokensFromAUserWhoseAuthoritiesAreAlreadyFilled() throws Exception {
+        final UserI user = userWithLazyAuthorities();
+        when(userResolver.resolveExisting(USERNAME, PROVIDER)).thenAnswer(invocation -> {
+            Thread.sleep(300);
+            return user;
+        });
+        assertConcurrentRequestsAuthenticate(sign(signingKey, validClaims().build()), (req, res) -> { });
+    }
+
+    /**
+     * XDATUser fills its role names into a plain HashSet on first use, and XNAT's role checks read them.
+     * This user does the same, and a call that overlaps the filling fails, as a corrupted HashSet's copy does.
+     */
+    private static XDATUser xdatUserWithLazyRoleNames() {
+        final XDATUser user = mock(XDATUser.class);
+        lenient().when(user.getUsername()).thenReturn(USERNAME);
+        lenient().when(user.isEnabled()).thenReturn(true);
+        lenient().when(user.isAccountNonLocked()).thenReturn(true);
+        final List<String> filled = List.of("Administrator");
+        final AtomicBoolean filling = new AtomicBoolean();
+        final AtomicBoolean done = new AtomicBoolean();
+        lenient().doAnswer(invocation -> {
+            if (done.get()) {
+                return filled;
+            }
+            if (!filling.compareAndSet(false, true)) {
+                throw new NullPointerException("at index 1");
+            }
+            Thread.sleep(200);
+            done.set(true);
+            return filled;
+        }).when(user).getRoleNames();
+        return user;
+    }
+
+    @Test
+    public void concurrentRequestsReadRoleNamesThatAreAlreadyFilled() throws Exception {
+        final XDATUser user = xdatUserWithLazyRoleNames();
+        when(userResolver.resolveExisting(USERNAME, PROVIDER)).thenAnswer(invocation -> {
+            Thread.sleep(300);
+            return user;
+        });
+        assertConcurrentRequestsAuthenticate(sign(signingKey, validClaims().build()),
+                (req, res) -> ((XDATUser) currentAuth().getPrincipal()).getRoleNames());
+    }
+
+    @Test
+    public void aUserWhoseTokenCannotBeBuiltIsLoadedAgain() throws Exception {
+        final UserI broken = enabledUser();
+        final AtomicInteger calls = new AtomicInteger();
+        doAnswer(invocation -> {
+            if (calls.incrementAndGet() > 1) {
+                throw new NullPointerException("authorities");
+            }
+            return Collections.emptyList();
+        }).when(broken).getAuthorities();
+        final UserI healthy = enabledUser();
+        when(userResolver.resolveExisting(USERNAME, PROVIDER)).thenReturn(broken).thenReturn(healthy);
+        final String token = sign(signingKey, validClaims().build());
+
+        bearer(token);
+        try {
+            doFilter();
+            org.junit.Assert.fail("expected the token build to fail");
+        } catch (final NullPointerException expected) {
+            // the request fails as before
+        }
+
+        nextRequest();
+        bearer(token);
+        doFilter();
+        assertNotNull("the next request should load the user again and authenticate", chain.getRequest());
+        verify(userResolver, times(2)).resolveExisting(USERNAME, PROVIDER);
+    }
+
+    @Test
+    public void differentIdentitiesAreResolvedSeparately() throws Exception {
+        final UserI alice = enabledUser();
+        final UserI bob = enabledUser();
+        when(userResolver.resolveExisting(USERNAME, PROVIDER)).thenReturn(alice);
+        when(userResolver.resolveExisting("keycloak_bob", PROVIDER)).thenReturn(bob);
+
+        bearer(sign(signingKey, validClaims().build()));
+        doFilter();
+        nextRequest();
+        bearer(sign(signingKey, validClaims().subject("bob").build()));
+        doFilter();
+
+        assertSame(bob, currentAuth().getPrincipal());
+        verify(userResolver).resolveExisting(USERNAME, PROVIDER);
+        verify(userResolver).resolveExisting("keycloak_bob", PROVIDER);
+    }
+
+    @Test
+    public void theSameUsernameFromTwoProvidersIsResolvedSeparately() throws Exception {
+        final String other = "other";
+        final String otherIssuer = "https://other-idp.example/realms/xnat";
+        lenient().when(plugin.getEnabledProviders()).thenReturn(List.of(PROVIDER, other));
+        lenient().when(plugin.getProperty(other, "bearer.enabled")).thenReturn("true");
+        lenient().when(plugin.getProperty(other, OpenIdAuthConstant.ISSUER)).thenReturn(otherIssuer);
+        lenient().when(plugin.getProperty(other, OpenIdAuthConstant.JWKS_URI)).thenReturn("https://other-idp.example/jwks");
+        lenient().when(plugin.getProperty(other, "audCheck.acceptedAudiences")).thenReturn(AUDIENCE);
+        lenient().when(plugin.getProperty(PROVIDER, OpenIdAuthConstant.USERNAME_PATTERN)).thenReturn("[sub]");
+        lenient().when(plugin.getProperty(other, OpenIdAuthConstant.USERNAME_PATTERN)).thenReturn("[sub]");
+        filter = new BearerTokenAuthenticationFilter(plugin, new BearerTokenExtractor(),
+                new BearerProviderResolver(plugin),
+                new JwtValidatorRegistry(Map.of(
+                        PROVIDER, new JwtValidator(ISSUER, trustedSource, JwtValidator.ACCESS_TOKEN_TYPES),
+                        other, new JwtValidator(otherIssuer, trustedSource, JwtValidator.ACCESS_TOKEN_TYPES))),
+                new ClaimGateFactory(plugin), userResolver, new OpenIdAccountPolicy(plugin, siteConfigPreferences),
+                eventPublisher, new ProtectedResourceMetadata(plugin));
+        final UserI alice = enabledUser();
+        final UserI otherAlice = enabledUser();
+        when(userResolver.resolveExisting("alice", PROVIDER)).thenReturn(alice);
+        when(userResolver.resolveExisting("alice", other)).thenReturn(otherAlice);
+
+        bearer(sign(signingKey, validClaims().build()));
+        doFilter();
+        assertSame(alice, currentAuth().getPrincipal());
+
+        nextRequest();
+        bearer(sign(signingKey, validClaims().issuer(otherIssuer).build()));
+        doFilter();
+        assertSame(otherAlice, currentAuth().getPrincipal());
+    }
+
+    @Test
+    public void aDenialIsNotReused() throws Exception {
+        final UserI user = enabledUser();
+        when(userResolver.resolveExisting(USERNAME, PROVIDER))
+                .thenThrow(new UsernameAuthMappingNotFoundException(USERNAME, XdatUserAuthService.OPENID, PROVIDER, null, null, null))
+                .thenReturn(user);
+        final String token = sign(signingKey, validClaims().build());
+
+        bearer(token);
+        doFilter();
+        assertEquals(HttpServletResponse.SC_FORBIDDEN, response.getStatus());
+
+        nextRequest();
+        bearer(token);
+        doFilter();
+        assertNotNull("the next request should resolve again and authenticate", chain.getRequest());
+    }
+
+    @Test
+    public void anAccountThatCouldNotBeLoadedIsUnavailableNotForbidden() throws Exception {
+        when(userResolver.resolveExisting(USERNAME, PROVIDER))
+                .thenThrow(new AccountUnavailableException("could not be loaded", new IllegalStateException("database down")));
+        bearer(sign(signingKey, validClaims().build()));
+
+        doFilter();
+
+        assertEquals(HttpServletResponse.SC_SERVICE_UNAVAILABLE, response.getStatus());
+        assertNull("chain must not be invoked", chain.getRequest());
+        assertNull(currentAuth());
+        verify(userResolver, never()).linkExistingIfConfigured(PROVIDER, AuthPath.BEARER, USERNAME);
+        verify(userResolver, never()).createUser(org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.any());
     }
 
     // ---- which usernamePattern pairs can never match --------------------------------------------

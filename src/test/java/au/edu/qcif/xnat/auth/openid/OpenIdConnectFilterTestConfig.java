@@ -11,6 +11,7 @@ import org.nrg.framework.services.ContextService;
 import org.nrg.prefs.services.NrgPreferenceService;
 import org.nrg.xdat.preferences.SiteConfigPreferences;
 import org.nrg.xdat.security.services.UserManagementServiceI;
+import org.nrg.xdat.entities.XdatUserAuth;
 import org.nrg.xdat.services.XdatUserAuthService;
 import org.nrg.xft.security.UserI;
 import org.nrg.xnat.security.provider.AuthenticationProviderConfigurationLocator;
@@ -89,17 +90,24 @@ public class OpenIdConnectFilterTestConfig {
         return siteConfigPreferences;
     }
 
+    /** The account the test identity is mapped to; tests return it from a static mock of {@code Users.getUser}. */
     @Bean
-    public XdatUserAuthService userAuthService() {
+    public UserI testUser() {
         final UserI user = mock(UserI.class);
         when(user.getUsername()).thenReturn(TEST_USERNAME);
         when(user.getLogin()).thenReturn(TEST_USERNAME);
         when(user.isEnabled()).thenReturn(true);
         when(user.isVerified()).thenReturn(true);
         when(user.isAccountNonLocked()).thenReturn(true);
+        return user;
+    }
 
+    @Bean
+    public XdatUserAuthService userAuthService() {
+        final XdatUserAuth mapping = new XdatUserAuth(TEST_USERNAME, XdatUserAuthService.OPENID, TEST_PROVIDER_ID);
+        mapping.setXdatUsername(TEST_USERNAME);
         final XdatUserAuthService userAuthService = mock(XdatUserAuthService.class);
-        when(userAuthService.getUserDetailsByNameAndAuth(TEST_USERNAME, XdatUserAuthService.OPENID, TEST_PROVIDER_ID)).thenReturn(user);
+        when(userAuthService.getUserByNameAndAuth(TEST_USERNAME, XdatUserAuthService.OPENID, TEST_PROVIDER_ID)).thenReturn(mapping);
         return userAuthService;
     }
 

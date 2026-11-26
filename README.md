@@ -288,9 +288,23 @@ REST path can only return **403**.
 | Token valid but the identity's email domain is not on the whitelist | **403 Forbidden** |
 | Token valid but no XNAT account is mapped (and auto-create is off) | **403 Forbidden** |
 | Token valid but the account is disabled, unverified (when site requires verification), or locked | **403 Forbidden** |
+| Token valid, but XNAT could not look up the mapping or load the mapped account (a database error, for example) | **503 Service Unavailable** |
 
 A bearer caller resolves to the same XNAT user that a prior interactive login would create for that
 identity (both derive `auth_user` from the same `usernamePattern`).
+
+The token is validated on every request, but the XNAT user it resolves to is reused for 30 seconds,
+and requests that arrive together for the same identity share one lookup. A client that sends many
+requests at once, such as a viewer loading a series, therefore loads the account once rather than once
+per request. A change to the account itself can take up to those 30 seconds to reach this path: an
+account disabled, locked or deleted in XNAT can go on being accepted, one re-enabled can go on being
+refused, and a change to its site roles applies when it is next loaded. The authentication-success event
+and the access-log `Authentication` entry are recorded when the account is loaded, not on every request;
+XNAT still logs each request.
+
+On the interactive path, an account that is mapped but could not be loaded fails the login instead of
+being treated as unmapped. A mapping whose account has been removed is still treated as unmapped, as XNAT
+treats it.
 
 > **Audience gate is on by default for the bearer path.** On the bearer path the `aud` claim is the
 > confinement boundary that stops a token minted for another client from being replayed against XNAT,

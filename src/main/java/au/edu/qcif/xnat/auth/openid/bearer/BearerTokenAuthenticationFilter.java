@@ -1,5 +1,6 @@
 package au.edu.qcif.xnat.auth.openid.bearer;
 
+import au.edu.qcif.xnat.auth.openid.AccountUnavailableException;
 import au.edu.qcif.xnat.auth.openid.OpenIdAccountPolicy;
 import au.edu.qcif.xnat.auth.openid.OpenIdAuthPlugin;
 import au.edu.qcif.xnat.auth.openid.OpenIdConnectUserDetails;
@@ -15,12 +16,18 @@ import au.edu.qcif.xnat.auth.openid.jwt.JwtValidationException;
 import au.edu.qcif.xnat.auth.openid.jwt.JwtValidator;
 import au.edu.qcif.xnat.auth.openid.jwt.JwtValidatorRegistry;
 import au.edu.qcif.xnat.auth.openid.tokens.OpenIdAuthRequestToken;
+import com.google.common.base.Throwables;
+import com.google.common.base.Ticker;
+import com.google.common.cache.Cache;
+import com.google.common.cache.CacheBuilder;
+import com.google.common.util.concurrent.UncheckedExecutionException;
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 import org.nrg.xdat.exceptions.UsernameAuthMappingNotFoundException;
 import org.nrg.xdat.preferences.SiteConfigPreferences;
+import org.nrg.xdat.security.XDATUser;
 import org.nrg.xdat.services.XdatUserAuthService;
 import org.nrg.xdat.turbine.utils.AccessLogger;
 import org.nrg.xft.security.UserI;
@@ -43,8 +50,10 @@ import javax.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.lang.reflect.Field;
 import java.text.ParseException;
+import java.time.Duration;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -67,8 +76,10 @@ import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.USERNAME_PATTE
  *   <li>Peek the unverified {@code iss}, route it to a configured provider, and validate the token
  *       with that provider's keys. A bad/expired/wrong-issuer/unknown-issuer token → <b>401</b>.</li>
  *   <li>Run the provider's bearer claim gates; a gate failure → <b>403</b>.</li>
- *   <li>Resolve (and optionally auto-create) the XNAT user; a missing mapping with auto-create off,
- *       a disabled or locked account, or an unresolvable identity → <b>403</b>.</li>
+ *   <li>Resolve (and optionally auto-create) the XNAT user, or reuse the one resolved for this identity
+ *       within the last {@link #USER_CACHE_TTL}; a missing mapping with auto-create off, a disabled or
+ *       locked account, or an unresolvable identity → <b>403</b>; a mapping that could not be looked up
+ *       or a mapped account that could not be loaded → <b>503</b>.</li>
  *   <li>On success, set the {@link SecurityContextHolder} authentication and continue the chain.</li>
  * </ol>
  *
@@ -138,6 +149,13 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
     /** The placeholders whose value cannot be equal under two providers. */
     private static final Pattern UNMATCHABLE_PLACEHOLDER = Pattern.compile("\\[(providerId|sub)]");
 
+    /**
+     * How long a resolved XNAT user is reused for its identity, counted from when its account was read,
+     * and so how long a change to the account (disabled, locked, deleted, re-enabled, or its site roles)
+     * can take to reach this path.
+     */
+    static final Duration USER_CACHE_TTL = Duration.ofSeconds(30);
+
     private static String resolveSessionMgmtFilterAppliedKey() {
         try {
             final Field field = SessionManagementFilter.class.getDeclaredField("FILTER_APPLIED");
@@ -161,6 +179,15 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
     private final OpenIdAccountPolicy _accountPolicy;
     private final AuthenticationEventPublisher _eventPublisher;
     private final ProtectedResourceMetadata _resourceMetadata;
+    /**
+     * Resolved XNAT users by {@code (providerId, username)}. Building an {@code XDATUser} takes many
+     * queries, and a burst such as a viewer fetching every image in a series would otherwise build one per
+     * request. {@link Cache#get(Object, java.util.concurrent.Callable)} runs one load per key and makes
+     * concurrent callers wait for it. The requests that share a user read state {@code XDATUser} fills
+     * lazily and without synchronization, so the load fills it first (see {@link #cachedUser}).
+     */
+    private final Cache<Map.Entry<String, String>, CachedUser> _users;
+    private final Ticker _ticker;
     /** Guards against the repeated refresh events a parent/child context hierarchy produces. */
     private final AtomicBoolean _configReported = new AtomicBoolean();
 
@@ -185,6 +212,8 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
         _accountPolicy = new OpenIdAccountPolicy(plugin, siteConfigPreferences);
         _eventPublisher = eventPublisher;
         _resourceMetadata = resourceMetadata;
+        _ticker = Ticker.systemTicker();
+        _users = userCache(_ticker);
     }
 
     /**
@@ -215,6 +244,21 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
                                     final OpenIdAccountPolicy accountPolicy,
                                     final AuthenticationEventPublisher eventPublisher,
                                     final ProtectedResourceMetadata resourceMetadata) {
+        this(plugin, extractor, providerResolver, validators, gateFactory, userResolver, accountPolicy,
+             eventPublisher, resourceMetadata, Ticker.systemTicker());
+    }
+
+    /** Test seam: as above, with the clock the user cache expires entries by. */
+    BearerTokenAuthenticationFilter(final OpenIdAuthPlugin plugin,
+                                    final BearerTokenExtractor extractor,
+                                    final BearerProviderResolver providerResolver,
+                                    final JwtValidatorRegistry validators,
+                                    final ClaimGateFactory gateFactory,
+                                    final OpenIdUserResolver userResolver,
+                                    final OpenIdAccountPolicy accountPolicy,
+                                    final AuthenticationEventPublisher eventPublisher,
+                                    final ProtectedResourceMetadata resourceMetadata,
+                                    final Ticker ticker) {
         _plugin = plugin;
         _extractor = extractor;
         _providerResolver = providerResolver;
@@ -224,6 +268,16 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
         _accountPolicy = accountPolicy;
         _eventPublisher = eventPublisher;
         _resourceMetadata = resourceMetadata;
+        _ticker = ticker;
+        _users = userCache(ticker);
+    }
+
+    private static Cache<Map.Entry<String, String>, CachedUser> userCache(final Ticker ticker) {
+        return CacheBuilder.newBuilder()
+                .ticker(ticker)
+                .expireAfterWrite(USER_CACHE_TTL)
+                .maximumSize(1_000)
+                .build();
     }
 
     /**
@@ -428,10 +482,16 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
             return;
         }
 
-        final UserI xdatUser = resolveUser(providerId, user, response);
-        if (xdatUser == null) {
-            return; // resolveUser already wrote the 403
+        final AtomicBoolean loaded = new AtomicBoolean();
+        final Map.Entry<String, String> key = Map.entry(providerId, user.getUsername());
+        final CachedUser cached;
+        try {
+            cached = cachedUser(key, providerId, user, loaded);
+        } catch (final Rejection e) {
+            deny(response, e.status, e.getMessage());
+            return;
         }
+        final UserI xdatUser = cached.user();
         if (!xdatUser.isEnabled()) {
             forbidden(response, "the XNAT account for this identity is not enabled");
             return;
@@ -448,9 +508,17 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
             return;
         }
 
-        final Authentication authentication = new BearerAuthToken(xdatUser, providerId);
+        final Authentication authentication;
+        try {
+            authentication = new BearerAuthToken(xdatUser, providerId);
+        } catch (final RuntimeException e) {
+            _users.asMap().remove(key, cached);
+            throw e;
+        }
         SecurityContextHolder.getContext().setAuthentication(authentication);
-        recordSuccessfulAuthentication(user.getUsername(), xdatUser, providerId, request);
+        if (loaded.get()) {
+            recordSuccessfulAuthentication(user.getUsername(), xdatUser, providerId, request);
+        }
         log.debug("Bearer token authenticated user '{}' for provider '{}'", xdatUser.getUsername(), providerId);
         // Run the rest of the chain behind a wrapper that refuses to create a container session, so
         // downstream filters that call request.getSession() (e.g. XNAT's XnatExpiredPasswordFilter)
@@ -469,10 +537,11 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
     /**
      * Mirrors the interactive path's success-side bookkeeping: publishes an authentication-success
      * event (so XNAT listeners such as failed-login-counter reset and last-login tracking fire) and
-     * writes an XNAT access-log entry. Audit/event failures must never turn a validly authenticated
-     * request into a 500, so they are logged and swallowed. The access logger reads
-     * {@code request.getSession(false)} only when session tracking is on, which is {@code null} here,
-     * so it creates no session.
+     * writes an XNAT access-log entry. Like the interactive path's, it runs when the user is loaded, not
+     * on every request that reuses it; XNAT logs each request separately. Audit/event failures must
+     * never turn a validly authenticated request into a 500, so they are logged and swallowed. The
+     * access logger reads {@code request.getSession(false)} only when session tracking is on, which is
+     * {@code null} here, so it creates no session.
      */
     private void recordSuccessfulAuthentication(final String requesterUsername, final UserI xdatUser,
                                                 final String providerId, final HttpServletRequest request) {
@@ -496,18 +565,71 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
         }
     }
 
+    /** A resolved user, and the {@link #_ticker} reading from before its account was read. */
+    private record CachedUser(UserI user, long readFrom) {
+    }
+
+    /**
+     * The XNAT user for this identity, from {@link #_users} or resolved now. {@code loaded} is set when
+     * this call did the resolving. A {@link Rejection} is not cached, but callers waiting on the same
+     * resolution receive it too. A user whose token cannot be built is dropped from the cache.
+     *
+     * <p>The cache counts an entry's age from when it was written, after its resolution finished. One
+     * whose resolution was slow (auto-creation sends mail on this thread, for one) holds account state
+     * older than that, so it is resolved again once that state is {@link #USER_CACHE_TTL} old.</p>
+     */
+    private CachedUser cachedUser(final Map.Entry<String, String> key, final String providerId,
+                                  final OpenIdConnectUserDetails user, final AtomicBoolean loaded) throws Rejection {
+        final CachedUser cached = cachedOrResolved(key, providerId, user, loaded);
+        if (_ticker.read() - cached.readFrom() < USER_CACHE_TTL.toNanos()) {
+            return cached;
+        }
+        _users.asMap().remove(key, cached);
+        return cachedOrResolved(key, providerId, user, loaded);
+    }
+
+    private CachedUser cachedOrResolved(final Map.Entry<String, String> key, final String providerId,
+                                        final OpenIdConnectUserDetails user, final AtomicBoolean loaded)
+            throws Rejection {
+        try {
+            return _users.get(key, () -> {
+                loaded.set(true);
+                final long readFrom = _ticker.read();
+                final UserI resolved = resolveUser(providerId, user);
+                // Every request's token reads the authorities, and XNAT's role checks read the role
+                // names. XDATUser fills each into a plain HashSet on first use, so they are filled here,
+                // before the user is shared.
+                resolved.getAuthorities();
+                if (resolved instanceof XDATUser xdatUser) {
+                    xdatUser.getRoleNames();
+                }
+                return new CachedUser(resolved, readFrom);
+            });
+        } catch (final ExecutionException | UncheckedExecutionException e) {
+            Throwables.throwIfInstanceOf(e.getCause(), Rejection.class);
+            Throwables.throwIfUnchecked(e.getCause());
+            throw new IllegalStateException(e.getCause());
+        }
+    }
+
     /**
      * Looks up the mapped XNAT user; on a miss, links to an existing account or auto-creates one when
-     * either is configured. Writes 403 and returns null on failure.
+     * either is configured.
      *
      * <p>Linking is attempted before auto-creation, deliberately: when both are enabled, attaching this
      * identity to the account the person already has is always preferable to provisioning a second,
      * permissionless duplicate for the same human.</p>
+     *
+     * @throws Rejection with 403 when the identity has no account and none can be linked or created, or
+     *                   503 when its mapping could not be looked up or its account could not be loaded.
      */
-    private UserI resolveUser(final String providerId, final OpenIdConnectUserDetails user,
-                              final HttpServletResponse response) throws IOException {
+    private UserI resolveUser(final String providerId, final OpenIdConnectUserDetails user) throws Rejection {
         try {
             return _userResolver.resolveExisting(user.getUsername(), providerId);
+        } catch (final AccountUnavailableException e) {
+            log.warn("Could not load the XNAT account for '{}' on provider '{}'", user.getUsername(), providerId, e);
+            throw new Rejection(HttpServletResponse.SC_SERVICE_UNAVAILABLE,
+                                "the XNAT account for this identity could not be loaded");
         } catch (final UsernameAuthMappingNotFoundException notFound) {
             final UserI linked;
             try {
@@ -518,8 +640,8 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
                 // silently become a duplicate account for someone who already has one.
                 log.warn("Failed to link '{}' on provider '{}' to an existing XNAT account",
                         user.getUsername(), providerId, e);
-                forbidden(response, "could not link this identity to an existing XNAT account");
-                return null;
+                throw new Rejection(HttpServletResponse.SC_FORBIDDEN,
+                                    "could not link this identity to an existing XNAT account");
             }
             if (linked != null) {
                 return linked;
@@ -527,16 +649,25 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
             if (!isForceUserCreate(providerId)) {
                 log.info("No XNAT account mapped to '{}' for provider '{}' and auto-create is off; denying",
                         user.getUsername(), providerId);
-                forbidden(response, "no XNAT account is mapped to this OpenID identity");
-                return null;
+                throw new Rejection(HttpServletResponse.SC_FORBIDDEN, "no XNAT account is mapped to this OpenID identity");
             }
             try {
                 return _userResolver.createUser(providerId, user);
             } catch (final AuthenticationException e) {
                 log.warn("Failed to auto-create an XNAT account for '{}' on the bearer path", user.getUsername(), e);
-                forbidden(response, "could not provision an XNAT account for this identity");
-                return null;
+                throw new Rejection(HttpServletResponse.SC_FORBIDDEN,
+                                    "could not provision an XNAT account for this identity");
             }
+        }
+    }
+
+    /** A user resolution that failed with this status and message for the caller. */
+    private static final class Rejection extends Exception {
+        private final int status;
+
+        private Rejection(final int status, final String message) {
+            super(message, null, false, false);
+            this.status = status;
         }
     }
 
@@ -566,7 +697,11 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
     }
 
     private void forbidden(final HttpServletResponse response, final String message) throws IOException {
+        deny(response, HttpServletResponse.SC_FORBIDDEN, message);
+    }
+
+    private void deny(final HttpServletResponse response, final int status, final String message) throws IOException {
         SecurityContextHolder.clearContext();
-        response.sendError(HttpServletResponse.SC_FORBIDDEN, message);
+        response.sendError(status, message);
     }
 }
