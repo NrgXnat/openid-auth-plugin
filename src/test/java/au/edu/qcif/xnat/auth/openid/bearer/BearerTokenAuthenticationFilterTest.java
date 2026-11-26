@@ -625,6 +625,33 @@ public class BearerTokenAuthenticationFilterTest {
         verify(userResolver, times(2)).resolveExisting(USERNAME, PROVIDER);
     }
 
+    /** Auto-creation, for one, sends mail on the request thread after reading the account. */
+    @Test
+    public void anAccountReadLongerAgoThanTheTimeToLiveIsResolvedAgain() throws Exception {
+        final AtomicLong nanos = new AtomicLong();
+        filter = filterWithClock(new Ticker() {
+            @Override
+            public long read() {
+                return nanos.get();
+            }
+        });
+        final UserI enabledThen = enabledUser();
+        final UserI disabledSince = mock(UserI.class);
+        lenient().when(disabledSince.getUsername()).thenReturn(USERNAME);
+        when(disabledSince.isEnabled()).thenReturn(false);
+        when(userResolver.resolveExisting(USERNAME, PROVIDER)).thenAnswer(invocation -> {
+            nanos.addAndGet(BearerTokenAuthenticationFilter.USER_CACHE_TTL.plusSeconds(1).toNanos());
+            return enabledThen;
+        }).thenReturn(disabledSince);
+        bearer(sign(signingKey, validClaims().build()));
+
+        doFilter();
+
+        assertEquals(HttpServletResponse.SC_FORBIDDEN, response.getStatus());
+        assertNull("chain must not be invoked", chain.getRequest());
+        verify(userResolver, times(2)).resolveExisting(USERNAME, PROVIDER);
+    }
+
     @Test
     public void concurrentRequestsShareOneResolution() throws Exception {
         final UserI user = enabledUser();

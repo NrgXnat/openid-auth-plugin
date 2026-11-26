@@ -150,8 +150,9 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
     private static final Pattern UNMATCHABLE_PLACEHOLDER = Pattern.compile("\\[(providerId|sub)]");
 
     /**
-     * How long a resolved XNAT user is reused for its identity, and so how long a change to the account
-     * (disabled, locked, deleted, re-enabled, or its site roles) can take to reach this path.
+     * How long a resolved XNAT user is reused for its identity, counted from when its account was read,
+     * and so how long a change to the account (disabled, locked, deleted, re-enabled, or its site roles)
+     * can take to reach this path.
      */
     static final Duration USER_CACHE_TTL = Duration.ofSeconds(30);
 
@@ -185,7 +186,8 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
      * concurrent callers wait for it. The requests that share a user read state {@code XDATUser} fills
      * lazily and without synchronization, so the load fills it first (see {@link #cachedUser}).
      */
-    private final Cache<Map.Entry<String, String>, UserI> _users;
+    private final Cache<Map.Entry<String, String>, CachedUser> _users;
+    private final Ticker _ticker;
     /** Guards against the repeated refresh events a parent/child context hierarchy produces. */
     private final AtomicBoolean _configReported = new AtomicBoolean();
 
@@ -210,7 +212,8 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
         _accountPolicy = new OpenIdAccountPolicy(plugin, siteConfigPreferences);
         _eventPublisher = eventPublisher;
         _resourceMetadata = resourceMetadata;
-        _users = userCache(Ticker.systemTicker());
+        _ticker = Ticker.systemTicker();
+        _users = userCache(_ticker);
     }
 
     /**
@@ -265,10 +268,11 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
         _accountPolicy = accountPolicy;
         _eventPublisher = eventPublisher;
         _resourceMetadata = resourceMetadata;
+        _ticker = ticker;
         _users = userCache(ticker);
     }
 
-    private static Cache<Map.Entry<String, String>, UserI> userCache(final Ticker ticker) {
+    private static Cache<Map.Entry<String, String>, CachedUser> userCache(final Ticker ticker) {
         return CacheBuilder.newBuilder()
                 .ticker(ticker)
                 .expireAfterWrite(USER_CACHE_TTL)
@@ -479,13 +483,15 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
         }
 
         final AtomicBoolean loaded = new AtomicBoolean();
-        final UserI xdatUser;
+        final Map.Entry<String, String> key = Map.entry(providerId, user.getUsername());
+        final CachedUser cached;
         try {
-            xdatUser = cachedUser(providerId, user, loaded);
+            cached = cachedUser(key, providerId, user, loaded);
         } catch (final Rejection e) {
             deny(response, e.status, e.getMessage());
             return;
         }
+        final UserI xdatUser = cached.user();
         if (!xdatUser.isEnabled()) {
             forbidden(response, "the XNAT account for this identity is not enabled");
             return;
@@ -506,7 +512,7 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
         try {
             authentication = new BearerAuthToken(xdatUser, providerId);
         } catch (final RuntimeException e) {
-            _users.asMap().remove(Map.entry(providerId, user.getUsername()), xdatUser);
+            _users.asMap().remove(key, cached);
             throw e;
         }
         SecurityContextHolder.getContext().setAuthentication(authentication);
@@ -559,16 +565,36 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
         }
     }
 
+    /** A resolved user, and the {@link #_ticker} reading from before its account was read. */
+    private record CachedUser(UserI user, long readFrom) {
+    }
+
     /**
      * The XNAT user for this identity, from {@link #_users} or resolved now. {@code loaded} is set when
      * this call did the resolving. A {@link Rejection} is not cached, but callers waiting on the same
      * resolution receive it too. A user whose token cannot be built is dropped from the cache.
+     *
+     * <p>The cache counts an entry's age from when it was written, after its resolution finished. One
+     * whose resolution was slow (auto-creation sends mail on this thread, for one) holds account state
+     * older than that, so it is resolved again once that state is {@link #USER_CACHE_TTL} old.</p>
      */
-    private UserI cachedUser(final String providerId, final OpenIdConnectUserDetails user, final AtomicBoolean loaded)
+    private CachedUser cachedUser(final Map.Entry<String, String> key, final String providerId,
+                                  final OpenIdConnectUserDetails user, final AtomicBoolean loaded) throws Rejection {
+        final CachedUser cached = cachedOrResolved(key, providerId, user, loaded);
+        if (_ticker.read() - cached.readFrom() < USER_CACHE_TTL.toNanos()) {
+            return cached;
+        }
+        _users.asMap().remove(key, cached);
+        return cachedOrResolved(key, providerId, user, loaded);
+    }
+
+    private CachedUser cachedOrResolved(final Map.Entry<String, String> key, final String providerId,
+                                        final OpenIdConnectUserDetails user, final AtomicBoolean loaded)
             throws Rejection {
         try {
-            return _users.get(Map.entry(providerId, user.getUsername()), () -> {
+            return _users.get(key, () -> {
                 loaded.set(true);
+                final long readFrom = _ticker.read();
                 final UserI resolved = resolveUser(providerId, user);
                 // Every request's token reads the authorities, and XNAT's role checks read the role
                 // names. XDATUser fills each into a plain HashSet on first use, so they are filled here,
@@ -577,7 +603,7 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
                 if (resolved instanceof XDATUser xdatUser) {
                     xdatUser.getRoleNames();
                 }
-                return resolved;
+                return new CachedUser(resolved, readFrom);
             });
         } catch (final ExecutionException | UncheckedExecutionException e) {
             Throwables.throwIfInstanceOf(e.getCause(), Rejection.class);
