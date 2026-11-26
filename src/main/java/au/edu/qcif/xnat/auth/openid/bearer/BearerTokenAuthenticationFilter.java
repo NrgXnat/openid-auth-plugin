@@ -4,6 +4,7 @@ import au.edu.qcif.xnat.auth.openid.OpenIdAccountPolicy;
 import au.edu.qcif.xnat.auth.openid.OpenIdAuthPlugin;
 import au.edu.qcif.xnat.auth.openid.OpenIdConnectUserDetails;
 import au.edu.qcif.xnat.auth.openid.OpenIdUserResolver;
+import au.edu.qcif.xnat.auth.openid.discovery.ProtectedResourceMetadata;
 import au.edu.qcif.xnat.auth.openid.gate.AuthPath;
 import au.edu.qcif.xnat.auth.openid.gate.ClaimGate;
 import au.edu.qcif.xnat.auth.openid.gate.ClaimGateException;
@@ -161,6 +162,7 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
     private final OpenIdUserResolver _userResolver;
     private final OpenIdAccountPolicy _accountPolicy;
     private final AuthenticationEventPublisher _eventPublisher;
+    private final ProtectedResourceMetadata _resourceMetadata;
     /** Guards against the repeated refresh events a parent/child context hierarchy produces. */
     private final AtomicBoolean _configReported = new AtomicBoolean();
 
@@ -174,6 +176,7 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
                                            final SiteConfigPreferences siteConfigPreferences,
                                            final AuthenticationEventPublisher eventPublisher,
                                            final JwtValidatorRegistry validators,
+                                           final ProtectedResourceMetadata resourceMetadata,
                                            @Qualifier("asyncTaskExecutor") final Executor notifier) {
         _plugin = plugin;
         _extractor = new BearerTokenExtractor();
@@ -184,6 +187,7 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
         _userResolver = new OpenIdUserResolver(plugin, userAuthService, notifier);
         _accountPolicy = new OpenIdAccountPolicy(plugin, siteConfigPreferences);
         _eventPublisher = eventPublisher;
+        _resourceMetadata = resourceMetadata;
     }
 
     /**
@@ -213,9 +217,10 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
                                     final ClaimGateFactory gateFactory,
                                     final OpenIdUserResolver userResolver,
                                     final OpenIdAccountPolicy accountPolicy,
-                                    final AuthenticationEventPublisher eventPublisher) {
+                                    final AuthenticationEventPublisher eventPublisher,
+                                    final ProtectedResourceMetadata resourceMetadata) {
         this(plugin, extractor, providerResolver, validators, gateFactory, new RoleSync(plugin), userResolver,
-             accountPolicy, eventPublisher);
+             accountPolicy, eventPublisher, resourceMetadata);
     }
 
     /** Test seam: as above, with the role sync injected too. */
@@ -227,7 +232,8 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
                                     final RoleSync roleSync,
                                     final OpenIdUserResolver userResolver,
                                     final OpenIdAccountPolicy accountPolicy,
-                                    final AuthenticationEventPublisher eventPublisher) {
+                                    final AuthenticationEventPublisher eventPublisher,
+                                    final ProtectedResourceMetadata resourceMetadata) {
         _plugin = plugin;
         _extractor = extractor;
         _providerResolver = providerResolver;
@@ -237,6 +243,7 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
         _userResolver = userResolver;
         _accountPolicy = accountPolicy;
         _eventPublisher = eventPublisher;
+        _resourceMetadata = resourceMetadata;
     }
 
     /**
@@ -397,14 +404,14 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
             parsedJwt = SignedJWT.parse(rawJwt);
             issuer = parsedJwt.getJWTClaimsSet().getIssuer();
         } catch (final ParseException e) {
-            unauthorized(response, "malformed bearer token");
+            unauthorized(request, response, "malformed bearer token");
             return;
         }
 
         final Optional<String> maybeProvider = _providerResolver.resolve(issuer);
         if (maybeProvider.isEmpty()) {
             log.info("Bearer token from unknown issuer '{}' rejected", issuer);
-            unauthorized(response, "bearer token issuer is not configured");
+            unauthorized(request, response, "bearer token issuer is not configured");
             return;
         }
         final String providerId = maybeProvider.get();
@@ -413,7 +420,7 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
         if (validator == null) {
             // Provider routed but no validator built (e.g. malformed jwksUri at startup) — fail closed.
             log.warn("No bearer token validator configured for provider '{}'", providerId);
-            unauthorized(response, "bearer token issuer is not configured");
+            unauthorized(request, response, "bearer token issuer is not configured");
             return;
         }
 
@@ -422,7 +429,7 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
             claims = validator.validate(rawJwt);
         } catch (final JwtValidationException e) {
             log.info("Bearer token for provider '{}' failed validation: {}", providerId, e.getMessage());
-            unauthorized(response, "invalid bearer token");
+            unauthorized(request, response, "invalid bearer token");
             return;
         }
 
@@ -582,9 +589,10 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
         return Boolean.parseBoolean(new GateConfig(_plugin, providerId, AuthPath.BEARER).value("forceUserCreate"));
     }
 
-    private void unauthorized(final HttpServletResponse response, final String message) throws IOException {
+    private void unauthorized(final HttpServletRequest request, final HttpServletResponse response, final String message) throws IOException {
         SecurityContextHolder.clearContext();
-        response.setHeader("WWW-Authenticate", "Bearer error=\"invalid_token\"");
+        response.setHeader("WWW-Authenticate", "Bearer error=\"invalid_token\""
+                + _resourceMetadata.metadataUrlFor(request).map(url -> ", resource_metadata=\"" + url + "\"").orElse(""));
         response.sendError(HttpServletResponse.SC_UNAUTHORIZED, message);
     }
 

@@ -85,7 +85,7 @@ public class BearerTokenAuthenticationFilterStartupTest {
                                                    providerResolver, new JwtValidatorRegistry(Collections.emptyMap()),
                                                    null, mock(OpenIdUserResolver.class),
                                                    mock(OpenIdAccountPolicy.class),
-                                                   mock(AuthenticationEventPublisher.class));
+                                                   mock(AuthenticationEventPublisher.class), null);
     }
 
     /** The warnings role sync writes, through its own logger, while {@code action} runs. */
@@ -135,7 +135,7 @@ public class BearerTokenAuthenticationFilterStartupTest {
         property(PROVIDER, "roleSync.mappings", "nocolon=Role");
         final BearerTokenAuthenticationFilter built = new BearerTokenAuthenticationFilter(plugin,
                 mock(XdatUserAuthService.class), mock(SiteConfigPreferences.class),
-                mock(AuthenticationEventPublisher.class), new JwtValidatorRegistry(Collections.emptyMap()),
+                mock(AuthenticationEventPublisher.class), new JwtValidatorRegistry(Collections.emptyMap()), null,
                 mock(Executor.class));
 
         final List<String> warnings = roleSyncWarningsDuring(() -> built.onApplicationEvent(mock(ContextRefreshedEvent.class)));

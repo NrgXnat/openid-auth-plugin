@@ -391,6 +391,94 @@ should be attached to.
 Must be another **OpenID** provider: only `openid` mappings are searched, so `localdb` never matches
 and is reported at startup. 
 
+### Protected resource metadata (desktop tool discovery)
+
+Desktop tools (XNAT Workstation, xnatpy, the XNAT Desktop Client) can sign in with the provider
+themselves (authorization code with PKCE, or device flow) and call XNAT with
+`Authorization: Bearer`. To find the provider and their client ID, they read a public JSON document
+in the shape of [RFC 9728](https://www.rfc-editor.org/rfc/rfc9728) (OAuth 2.0 Protected Resource
+Metadata):
+
+```
+GET /.well-known/oauth-protected-resource
+```
+
+```json
+{
+  "resource": "https://xnat.example.org",
+  "resource_name": "Example XNAT",
+  "authorization_servers": ["https://keycloak.example.org/realms/xnat"],
+  "scopes_supported": ["openid"],
+  "bearer_methods_supported": ["header"],
+  "resource_documentation": "https://xnat.example.org/xapi/swagger-ui.html",
+  "xnat_api_url": "https://xnat.example.org",
+  "xnat_web_url": "https://xnat.example.org",
+  "xnat_clients": {
+    "default": {"client_id": "xnat-tools", "scope": "openid"},
+    "xnat-workstation": {"client_id": "xnat-workstation", "scope": "openid"},
+    "xnatpy": {"client_id": "xnatpy", "scope": "openid"}
+  }
+}
+```
+
+The document is off by default. It is served only when `openid.discovery.enabled=true` and
+`openid.discovery.provider` names an enabled provider with `bearer.enabled=true`, `issuer` and
+`jwksUri`; otherwise the URL behaves as it did before. It is answered for anonymous callers, creates
+no session, and may be cached for five minutes. A `401` from the bearer path then also carries
+`WWW-Authenticate: Bearer error="invalid_token", resource_metadata="<the document's URL>"`
+(RFC 9728 section 5.1).
+
+**`resource`** is the one of `siteUrl`, `openid.discovery.apiUrl` and `openid.discovery.webUrl`
+whose host is the host of the request and whose path is the path the request names; when two of
+them differ only in scheme or port, the one matching the request's scheme and port wins. It is never
+built from the request, so a forged `Host` header cannot choose it; a request for any other host
+falls through. The host is the request's `Host` header, so a proxy in front of XNAT must pass it
+through unchanged (in nginx, `proxy_set_header Host $host`): otherwise the document falls through to
+XNAT's login redirect, and bearer `401`s carry no `resource_metadata`. `siteUrl` is the provider properties' `siteUrl`, or XNAT's site URL when that is not
+set. If XNAT runs under a context path such as `/xnat`, RFC 9728 puts the document at
+`https://host/.well-known/oauth-protected-resource/xnat`, outside the webapp: the proxy in front of
+XNAT has to route that path to `/xnat/.well-known/oauth-protected-resource/xnat`, which the plugin
+answers.
+
+**Extension fields.** RFC 9728 has no field for a client ID, so the document adds three, which
+clients that don't know them ignore:
+
+* `xnat_clients`: per tool, the `client_id` and `scope` to request. A tool looks up its own name and
+  uses `default` when its name is absent.
+* `xnat_api_url`: where bearer requests go, when that is not the host the document was read from.
+* `xnat_web_url`: where links that open XNAT in a browser point.
+
+A tool must reject an `xnat_api_url` outside the registrable domain of the URL its user typed, since
+it sends the user's token there.
+
+#### openid.discovery.enabled
+
+Serve the document. Default `false`.
+
+#### openid.discovery.provider
+
+The provider whose `issuer` becomes `authorization_servers`. It must have `bearer.enabled=true`,
+`issuer` and `jwksUri`, or the document is not served and an error is logged.
+
+#### openid.discovery.resourceName / openid.discovery.documentation
+
+Optional `resource_name` and `resource_documentation`.
+
+#### openid.discovery.scopes
+
+`scopes_supported`, comma- or space-separated. Default `openid`. Also the default `scope` of each
+client.
+
+#### openid.discovery.apiUrl / openid.discovery.webUrl
+
+`xnat_api_url` and `xnat_web_url`. Each defaults to `siteUrl`. The document is also served on these
+hosts, with `resource` set to the URL of the host it was read from.
+
+#### openid.discovery.clients.`name`.clientId / openid.discovery.clients.`name`.scope
+
+One entry of `xnat_clients` per `name`. `scope` defaults to `openid.discovery.scopes`. Name the
+fallback entry `default`.
+
 ### auto.enabled
 
 Standard XNAT provider attribute that sets the `enabled` property of new users. Set to `false` to require admins to manually enable users before allowing logins, set to `true` to allow immediate access.
