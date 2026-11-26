@@ -88,19 +88,32 @@ public class OpenIdUserResolver {
         if (mapping == null) {
             throw new UsernameAuthMappingNotFoundException(username, XdatUserAuthService.OPENID, providerId, null, null, null);
         }
-        final UserI user;
-        try {
-            user = Users.getUser(mapping.getXdatUsername());
-        } catch (final UserNotFoundException gone) {
+        final UserI user = loadAccount(mapping.getXdatUsername());
+        if (user == null) {
             // XNAT treats a mapping whose account has been removed as no mapping, so the account can be made again.
             log.warn("The mapping for '{}' on provider '{}' names XNAT account '{}', which no longer exists.",
                      username, providerId, mapping.getXdatUsername());
             throw new UsernameAuthMappingNotFoundException(username, XdatUserAuthService.OPENID, providerId, null, null, null);
-        } catch (final UserInitException e) {
-            throw new AccountUnavailableException("The XNAT account mapped to this identity could not be loaded", e);
         }
         user.setAuthorization(new XdatUserAuth(mapping));
         return user;
+    }
+
+    /**
+     * Loads the XNAT account a mapping names, outside any transaction.
+     *
+     * @return the account, or {@code null} if it no longer exists.
+     * @throws AccountUnavailableException if the account exists but could not be loaded.
+     */
+    private static UserI loadAccount(final String xdatUsername) throws AccountUnavailableException {
+        try {
+            return Users.getUser(xdatUsername);
+        } catch (final UserNotFoundException gone) {
+            return null;
+        } catch (final UserInitException | RuntimeException e) {
+            log.error("XNAT account '{}' could not be loaded", xdatUsername, e);
+            throw new AccountUnavailableException("Could not load the XNAT account for this identity", e);
+        }
     }
 
     /**
@@ -207,23 +220,17 @@ public class OpenIdUserResolver {
             return null;
         }
 
-        final UserI existing;
-        try {
-            existing = Users.getUser(xdatUsername);
-        } catch (final UserNotFoundException absent) {
+        // An account that exists but could not be loaded is not "nothing to link to": returning null would
+        // let the caller fall through to forceUserCreate, which -- when the source mapping names a different
+        // login than this provider resolves to -- provisions a second, permissionless account for someone
+        // who already has one, and writes a permanent mapping to it. loadAccount's exception refuses instead.
+        final UserI existing = loadAccount(xdatUsername);
+        if (existing == null) {
             // A stale mapping naming an account that has since been removed. There is genuinely nothing to
             // link to, so the caller may go on to create an account or deny, as it is configured to.
             log.warn("The '{}' mapping names XNAT account '{}', which no longer exists; not linking.",
                      sourceProvider, xdatUsername);
             return null;
-        } catch (final Exception e) {
-            // The account exists but could not be loaded. That is not "nothing to link to": returning null
-            // here lets the caller fall through to forceUserCreate, which -- when the source mapping names
-            // a different login than this provider resolves to -- provisions a second, permissionless
-            // account for someone who already has one, and writes a permanent mapping to it. Refuse.
-            log.error("The '{}' mapping names XNAT account '{}', which could not be loaded; refusing rather "
-                            + "than falling through to account creation.", sourceProvider, xdatUsername, e);
-            throw new AuthenticationServiceException("Could not load the XNAT account this identity links to");
         }
         XdatUserAuth link = new XdatUserAuth(username, XdatUserAuthService.OPENID, providerId);
         link.setXdatUsername(xdatUsername);
