@@ -11,6 +11,7 @@ import au.edu.qcif.xnat.auth.openid.gate.ClaimGateFactory;
 import au.edu.qcif.xnat.auth.openid.jwt.JwtValidator;
 import au.edu.qcif.xnat.auth.openid.jwt.JwtValidatorRegistry;
 import au.edu.qcif.xnat.auth.openid.tokens.OpenIdAuthToken;
+import com.google.common.base.Ticker;
 import com.nimbusds.jose.JOSEObjectType;
 import com.nimbusds.jose.JWSAlgorithm;
 import com.nimbusds.jose.JWSHeader;
@@ -32,6 +33,7 @@ import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnitRunner;
 import org.nrg.xdat.exceptions.UsernameAuthMappingNotFoundException;
 import org.nrg.xdat.preferences.SiteConfigPreferences;
+import org.nrg.xdat.security.XDATUser;
 import org.nrg.xdat.services.XdatUserAuthService;
 import org.nrg.xft.security.UserI;
 import org.springframework.mock.web.MockFilterChain;
@@ -44,10 +46,12 @@ import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 
+import javax.servlet.FilterChain;
 import javax.servlet.ServletRequest;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import javax.servlet.http.HttpSession;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -62,6 +66,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
@@ -549,16 +554,8 @@ public class BearerTokenAuthenticationFilterTest {
         verify(eventPublisher, times(1)).publishAuthenticationSuccess(org.mockito.ArgumentMatchers.any());
     }
 
-    @Test
-    public void concurrentRequestsShareOneResolution() throws Exception {
-        final UserI user = enabledUser();
-        final AtomicInteger resolutions = new AtomicInteger();
-        when(userResolver.resolveExisting(USERNAME, PROVIDER)).thenAnswer(invocation -> {
-            resolutions.incrementAndGet();
-            Thread.sleep(300); // long enough for every other request to arrive while this one resolves
-            return user;
-        });
-        final String token = sign(signingKey, validClaims().build());
+    /** Sends eight requests with {@code token} at once and asserts each authenticates and passes {@code downstream}. */
+    private void assertConcurrentRequestsAuthenticate(final String token, final FilterChain downstream) throws Exception {
         final int requests = 8;
         final CountDownLatch start = new CountDownLatch(1);
         final ExecutorService pool = Executors.newFixedThreadPool(requests);
@@ -568,11 +565,14 @@ public class BearerTokenAuthenticationFilterTest {
                 outcomes.add(pool.submit(() -> {
                     final MockHttpServletRequest concurrentRequest = new MockHttpServletRequest();
                     concurrentRequest.addHeader("Authorization", "Bearer " + token);
-                    final MockFilterChain concurrentChain = new MockFilterChain();
+                    final AtomicBoolean reached = new AtomicBoolean();
                     start.await();
                     try {
-                        filter.doFilter(concurrentRequest, new MockHttpServletResponse(), concurrentChain);
-                        return concurrentChain.getRequest() != null;
+                        filter.doFilter(concurrentRequest, new MockHttpServletResponse(), (req, res) -> {
+                            reached.set(true);
+                            downstream.doFilter(req, res);
+                        });
+                        return reached.get();
                     } finally {
                         SecurityContextHolder.clearContext();
                     }
@@ -585,6 +585,56 @@ public class BearerTokenAuthenticationFilterTest {
         } finally {
             pool.shutdownNow();
         }
+    }
+
+    private BearerTokenAuthenticationFilter filterWithClock(final Ticker ticker) {
+        return new BearerTokenAuthenticationFilter(plugin, new BearerTokenExtractor(),
+                new BearerProviderResolver(plugin),
+                new JwtValidatorRegistry(Collections.singletonMap(PROVIDER,
+                        new JwtValidator(ISSUER, trustedSource, JwtValidator.ACCESS_TOKEN_TYPES))),
+                new ClaimGateFactory(plugin), userResolver, new OpenIdAccountPolicy(plugin, siteConfigPreferences),
+                eventPublisher, new ProtectedResourceMetadata(plugin), ticker);
+    }
+
+    @Test
+    public void aResolvedUserIsReusedUntilItsTimeToLiveAndThenLoadedAgain() throws Exception {
+        final AtomicLong nanos = new AtomicLong();
+        filter = filterWithClock(new Ticker() {
+            @Override
+            public long read() {
+                return nanos.get();
+            }
+        });
+        final UserI user = enabledUser();
+        when(userResolver.resolveExisting(USERNAME, PROVIDER)).thenReturn(user);
+        final String token = sign(signingKey, validClaims().build());
+
+        bearer(token);
+        doFilter();
+        nanos.addAndGet(BearerTokenAuthenticationFilter.USER_CACHE_TTL.minusSeconds(1).toNanos());
+        nextRequest();
+        bearer(token);
+        doFilter();
+        verify(userResolver, times(1)).resolveExisting(USERNAME, PROVIDER);
+
+        nanos.addAndGet(Duration.ofSeconds(2).toNanos());
+        nextRequest();
+        bearer(token);
+        doFilter();
+        assertNotNull("chain should be invoked", chain.getRequest());
+        verify(userResolver, times(2)).resolveExisting(USERNAME, PROVIDER);
+    }
+
+    @Test
+    public void concurrentRequestsShareOneResolution() throws Exception {
+        final UserI user = enabledUser();
+        final AtomicInteger resolutions = new AtomicInteger();
+        when(userResolver.resolveExisting(USERNAME, PROVIDER)).thenAnswer(invocation -> {
+            resolutions.incrementAndGet();
+            Thread.sleep(300); // long enough for every other request to arrive while this one resolves
+            return user;
+        });
+        assertConcurrentRequestsAuthenticate(sign(signingKey, validClaims().build()), (req, res) -> { });
 
         assertEquals(1, resolutions.get());
     }
@@ -622,33 +672,44 @@ public class BearerTokenAuthenticationFilterTest {
             Thread.sleep(300);
             return user;
         });
-        final String token = sign(signingKey, validClaims().build());
-        final int requests = 8;
-        final CountDownLatch start = new CountDownLatch(1);
-        final ExecutorService pool = Executors.newFixedThreadPool(requests);
-        try {
-            final List<Future<Boolean>> outcomes = new ArrayList<>();
-            for (int i = 0; i < requests; i++) {
-                outcomes.add(pool.submit(() -> {
-                    final MockHttpServletRequest concurrentRequest = new MockHttpServletRequest();
-                    concurrentRequest.addHeader("Authorization", "Bearer " + token);
-                    final MockFilterChain concurrentChain = new MockFilterChain();
-                    start.await();
-                    try {
-                        filter.doFilter(concurrentRequest, new MockHttpServletResponse(), concurrentChain);
-                        return concurrentChain.getRequest() != null;
-                    } finally {
-                        SecurityContextHolder.clearContext();
-                    }
-                }));
+        assertConcurrentRequestsAuthenticate(sign(signingKey, validClaims().build()), (req, res) -> { });
+    }
+
+    /**
+     * XDATUser fills its role names into a plain HashSet on first use, and XNAT's role checks read them.
+     * This user does the same, and a call that overlaps the filling fails, as a corrupted HashSet's copy does.
+     */
+    private static XDATUser xdatUserWithLazyRoleNames() {
+        final XDATUser user = mock(XDATUser.class);
+        lenient().when(user.getUsername()).thenReturn(USERNAME);
+        lenient().when(user.isEnabled()).thenReturn(true);
+        lenient().when(user.isAccountNonLocked()).thenReturn(true);
+        final List<String> filled = List.of("Administrator");
+        final AtomicBoolean filling = new AtomicBoolean();
+        final AtomicBoolean done = new AtomicBoolean();
+        lenient().doAnswer(invocation -> {
+            if (done.get()) {
+                return filled;
             }
-            start.countDown();
-            for (final Future<Boolean> outcome : outcomes) {
-                assertTrue("every request should authenticate", outcome.get(10, TimeUnit.SECONDS));
+            if (!filling.compareAndSet(false, true)) {
+                throw new NullPointerException("at index 1");
             }
-        } finally {
-            pool.shutdownNow();
-        }
+            Thread.sleep(200);
+            done.set(true);
+            return filled;
+        }).when(user).getRoleNames();
+        return user;
+    }
+
+    @Test
+    public void concurrentRequestsReadRoleNamesThatAreAlreadyFilled() throws Exception {
+        final XDATUser user = xdatUserWithLazyRoleNames();
+        when(userResolver.resolveExisting(USERNAME, PROVIDER)).thenAnswer(invocation -> {
+            Thread.sleep(300);
+            return user;
+        });
+        assertConcurrentRequestsAuthenticate(sign(signingKey, validClaims().build()),
+                (req, res) -> ((XDATUser) currentAuth().getPrincipal()).getRoleNames());
     }
 
     @Test
@@ -699,6 +760,39 @@ public class BearerTokenAuthenticationFilterTest {
     }
 
     @Test
+    public void theSameUsernameFromTwoProvidersIsResolvedSeparately() throws Exception {
+        final String other = "other";
+        final String otherIssuer = "https://other-idp.example/realms/xnat";
+        lenient().when(plugin.getEnabledProviders()).thenReturn(List.of(PROVIDER, other));
+        lenient().when(plugin.getProperty(other, "bearer.enabled")).thenReturn("true");
+        lenient().when(plugin.getProperty(other, OpenIdAuthConstant.ISSUER)).thenReturn(otherIssuer);
+        lenient().when(plugin.getProperty(other, OpenIdAuthConstant.JWKS_URI)).thenReturn("https://other-idp.example/jwks");
+        lenient().when(plugin.getProperty(other, "audCheck.acceptedAudiences")).thenReturn(AUDIENCE);
+        lenient().when(plugin.getProperty(PROVIDER, OpenIdAuthConstant.USERNAME_PATTERN)).thenReturn("[sub]");
+        lenient().when(plugin.getProperty(other, OpenIdAuthConstant.USERNAME_PATTERN)).thenReturn("[sub]");
+        filter = new BearerTokenAuthenticationFilter(plugin, new BearerTokenExtractor(),
+                new BearerProviderResolver(plugin),
+                new JwtValidatorRegistry(Map.of(
+                        PROVIDER, new JwtValidator(ISSUER, trustedSource, JwtValidator.ACCESS_TOKEN_TYPES),
+                        other, new JwtValidator(otherIssuer, trustedSource, JwtValidator.ACCESS_TOKEN_TYPES))),
+                new ClaimGateFactory(plugin), userResolver, new OpenIdAccountPolicy(plugin, siteConfigPreferences),
+                eventPublisher, new ProtectedResourceMetadata(plugin));
+        final UserI alice = enabledUser();
+        final UserI otherAlice = enabledUser();
+        when(userResolver.resolveExisting("alice", PROVIDER)).thenReturn(alice);
+        when(userResolver.resolveExisting("alice", other)).thenReturn(otherAlice);
+
+        bearer(sign(signingKey, validClaims().build()));
+        doFilter();
+        assertSame(alice, currentAuth().getPrincipal());
+
+        nextRequest();
+        bearer(sign(signingKey, validClaims().issuer(otherIssuer).build()));
+        doFilter();
+        assertSame(otherAlice, currentAuth().getPrincipal());
+    }
+
+    @Test
     public void aDenialIsNotReused() throws Exception {
         final UserI user = enabledUser();
         when(userResolver.resolveExisting(USERNAME, PROVIDER))
@@ -719,7 +813,7 @@ public class BearerTokenAuthenticationFilterTest {
     @Test
     public void anAccountThatCouldNotBeLoadedIsUnavailableNotForbidden() throws Exception {
         when(userResolver.resolveExisting(USERNAME, PROVIDER))
-                .thenThrow(new AccountUnavailableException("could not be loaded"));
+                .thenThrow(new AccountUnavailableException("could not be loaded", new IllegalStateException("database down")));
         bearer(sign(signingKey, validClaims().build()));
 
         doFilter();

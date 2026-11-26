@@ -10,10 +10,6 @@ import org.springframework.security.authentication.AuthenticationServiceExceptio
  */
 public class AccountUnavailableException extends AuthenticationServiceException {
 
-    public AccountUnavailableException(final String message) {
-        super(message);
-    }
-
     public AccountUnavailableException(final String message, final Throwable cause) {
         super(message, cause);
     }

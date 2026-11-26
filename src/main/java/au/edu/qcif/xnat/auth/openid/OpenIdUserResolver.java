@@ -10,6 +10,7 @@ import org.nrg.xdat.XDAT;
 import org.nrg.xdat.entities.XdatUserAuth;
 import org.nrg.xdat.exceptions.UsernameAuthMappingNotFoundException;
 import org.nrg.xdat.security.helpers.Users;
+import org.nrg.xdat.security.user.exceptions.UserInitException;
 import org.nrg.xdat.security.user.exceptions.UserNotFoundException;
 import org.nrg.xdat.services.XdatUserAuthService;
 import org.nrg.xdat.turbine.utils.AdminUtils;
@@ -67,28 +68,39 @@ public class OpenIdUserResolver {
     }
 
     /**
+     * Looks up the mapping, then loads its account once the lookup's transaction has ended.
+     * {@code XdatUserAuthService.getUserDetailsByNameAndAuth} does both in one transaction, so each load
+     * holds a pooled connection while XFT takes another, and enough concurrent loads exhaust the pool. It
+     * also reports an account that failed to load as a missing mapping.
+     *
      * @return the existing XNAT user for this OpenID mapping.
-     * @throws UsernameAuthMappingNotFoundException if no mapping exists for {@code (username, OPENID, providerId)}.
-     * @throws AccountUnavailableException if the mapping exists but its account could not be loaded, or the
-     *                                     mapping could not be looked up.
+     * @throws UsernameAuthMappingNotFoundException if no mapping exists for {@code (username, OPENID, providerId)},
+     *                                              or the account it names no longer exists.
+     * @throws AccountUnavailableException if the mapping could not be looked up or its account could not be loaded.
      */
     public UserI resolveExisting(final String username, final String providerId) throws UsernameAuthMappingNotFoundException {
+        final XdatUserAuth mapping;
         try {
-            return _userAuthService.getUserDetailsByNameAndAuth(username, XdatUserAuthService.OPENID, providerId);
-        } catch (final UsernameAuthMappingNotFoundException notFound) {
-            // XNAT reports a mapped account that it failed to load (a database timeout, for one) as a missing
-            // mapping, which would send the caller on to linking, account creation or a "no account" denial.
-            final XdatUserAuth mapping;
-            try {
-                mapping = _userAuthService.getUserByNameAndAuth(username, XdatUserAuthService.OPENID, providerId);
-            } catch (final RuntimeException e) {
-                throw new AccountUnavailableException("Could not look up the XNAT account mapping for this identity", e);
-            }
-            if (mapping != null) {
-                throw new AccountUnavailableException("The XNAT account mapped to this identity could not be loaded");
-            }
-            throw notFound;
+            mapping = _userAuthService.getUserByNameAndAuth(username, XdatUserAuthService.OPENID, providerId);
+        } catch (final RuntimeException e) {
+            throw new AccountUnavailableException("Could not look up the XNAT account mapping for this identity", e);
         }
+        if (mapping == null) {
+            throw new UsernameAuthMappingNotFoundException(username, XdatUserAuthService.OPENID, providerId, null, null, null);
+        }
+        final UserI user;
+        try {
+            user = Users.getUser(mapping.getXdatUsername());
+        } catch (final UserNotFoundException gone) {
+            // XNAT treats a mapping whose account has been removed as no mapping, so the account can be made again.
+            log.warn("The mapping for '{}' on provider '{}' names XNAT account '{}', which no longer exists.",
+                     username, providerId, mapping.getXdatUsername());
+            throw new UsernameAuthMappingNotFoundException(username, XdatUserAuthService.OPENID, providerId, null, null, null);
+        } catch (final UserInitException e) {
+            throw new AccountUnavailableException("The XNAT account mapped to this identity could not be loaded", e);
+        }
+        user.setAuthorization(new XdatUserAuth(mapping));
+        return user;
     }
 
     /**

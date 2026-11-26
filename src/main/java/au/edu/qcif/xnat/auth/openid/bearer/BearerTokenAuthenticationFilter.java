@@ -17,6 +17,7 @@ import au.edu.qcif.xnat.auth.openid.jwt.JwtValidator;
 import au.edu.qcif.xnat.auth.openid.jwt.JwtValidatorRegistry;
 import au.edu.qcif.xnat.auth.openid.tokens.OpenIdAuthRequestToken;
 import com.google.common.base.Throwables;
+import com.google.common.base.Ticker;
 import com.google.common.cache.Cache;
 import com.google.common.cache.CacheBuilder;
 import com.google.common.util.concurrent.UncheckedExecutionException;
@@ -26,6 +27,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 import org.nrg.xdat.exceptions.UsernameAuthMappingNotFoundException;
 import org.nrg.xdat.preferences.SiteConfigPreferences;
+import org.nrg.xdat.security.XDATUser;
 import org.nrg.xdat.services.XdatUserAuthService;
 import org.nrg.xdat.turbine.utils.AccessLogger;
 import org.nrg.xft.security.UserI;
@@ -76,8 +78,8 @@ import static au.edu.qcif.xnat.auth.openid.etc.OpenIdAuthConstant.USERNAME_PATTE
  *   <li>Run the provider's bearer claim gates; a gate failure → <b>403</b>.</li>
  *   <li>Resolve (and optionally auto-create) the XNAT user, or reuse the one resolved for this identity
  *       within the last {@link #USER_CACHE_TTL}; a missing mapping with auto-create off, a disabled or
- *       locked account, or an unresolvable identity → <b>403</b>; a mapped account that could not be
- *       loaded → <b>503</b>.</li>
+ *       locked account, or an unresolvable identity → <b>403</b>; a mapping that could not be looked up
+ *       or a mapped account that could not be loaded → <b>503</b>.</li>
  *   <li>On success, set the {@link SecurityContextHolder} authentication and continue the chain.</li>
  * </ol>
  *
@@ -148,8 +150,8 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
     private static final Pattern UNMATCHABLE_PLACEHOLDER = Pattern.compile("\\[(providerId|sub)]");
 
     /**
-     * How long a resolved XNAT user is reused for its identity, and so how long an account disabled or
-     * locked in XNAT can still be accepted on this path.
+     * How long a resolved XNAT user is reused for its identity, and so how long a change to the account
+     * (disabled, locked, deleted, re-enabled, or its site roles) can take to reach this path.
      */
     static final Duration USER_CACHE_TTL = Duration.ofSeconds(30);
 
@@ -177,19 +179,13 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
     private final AuthenticationEventPublisher _eventPublisher;
     private final ProtectedResourceMetadata _resourceMetadata;
     /**
-     * Resolved XNAT users by {@code (providerId, username)}. Loading one ({@code XdatUserAuthService}'s
-     * transactional lookup, which builds the full {@code XDATUser}) holds one pooled database connection
-     * while it takes a second. Loaded once per request, a burst such as a viewer fetching every image in
-     * a series puts as many loads in flight as the pool has connections, and each holds one connection
-     * and waits for another until the pool times out. {@link Cache#get(Object, java.util.concurrent.Callable)}
-     * runs one load per key and makes concurrent callers wait for it. A session-backed login shares its
-     * user across requests too, but builds its token once, at sign-in; here every request builds one,
-     * so the load also fills what that reads (see {@link #cachedUser}).
+     * Resolved XNAT users by {@code (providerId, username)}. Building an {@code XDATUser} takes many
+     * queries, and a burst such as a viewer fetching every image in a series would otherwise build one per
+     * request. {@link Cache#get(Object, java.util.concurrent.Callable)} runs one load per key and makes
+     * concurrent callers wait for it. The requests that share a user read state {@code XDATUser} fills
+     * lazily and without synchronization, so the load fills it first (see {@link #cachedUser}).
      */
-    private final Cache<Map.Entry<String, String>, UserI> _users = CacheBuilder.newBuilder()
-            .expireAfterWrite(USER_CACHE_TTL)
-            .maximumSize(1_000)
-            .build();
+    private final Cache<Map.Entry<String, String>, UserI> _users;
     /** Guards against the repeated refresh events a parent/child context hierarchy produces. */
     private final AtomicBoolean _configReported = new AtomicBoolean();
 
@@ -214,6 +210,7 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
         _accountPolicy = new OpenIdAccountPolicy(plugin, siteConfigPreferences);
         _eventPublisher = eventPublisher;
         _resourceMetadata = resourceMetadata;
+        _users = userCache(Ticker.systemTicker());
     }
 
     /**
@@ -244,6 +241,21 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
                                     final OpenIdAccountPolicy accountPolicy,
                                     final AuthenticationEventPublisher eventPublisher,
                                     final ProtectedResourceMetadata resourceMetadata) {
+        this(plugin, extractor, providerResolver, validators, gateFactory, userResolver, accountPolicy,
+             eventPublisher, resourceMetadata, Ticker.systemTicker());
+    }
+
+    /** Test seam: as above, with the clock the user cache expires entries by. */
+    BearerTokenAuthenticationFilter(final OpenIdAuthPlugin plugin,
+                                    final BearerTokenExtractor extractor,
+                                    final BearerProviderResolver providerResolver,
+                                    final JwtValidatorRegistry validators,
+                                    final ClaimGateFactory gateFactory,
+                                    final OpenIdUserResolver userResolver,
+                                    final OpenIdAccountPolicy accountPolicy,
+                                    final AuthenticationEventPublisher eventPublisher,
+                                    final ProtectedResourceMetadata resourceMetadata,
+                                    final Ticker ticker) {
         _plugin = plugin;
         _extractor = extractor;
         _providerResolver = providerResolver;
@@ -253,6 +265,15 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
         _accountPolicy = accountPolicy;
         _eventPublisher = eventPublisher;
         _resourceMetadata = resourceMetadata;
+        _users = userCache(ticker);
+    }
+
+    private static Cache<Map.Entry<String, String>, UserI> userCache(final Ticker ticker) {
+        return CacheBuilder.newBuilder()
+                .ticker(ticker)
+                .expireAfterWrite(USER_CACHE_TTL)
+                .maximumSize(1_000)
+                .build();
     }
 
     /**
@@ -485,7 +506,7 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
         try {
             authentication = new BearerAuthToken(xdatUser, providerId);
         } catch (final RuntimeException e) {
-            _users.invalidate(Map.entry(providerId, user.getUsername()));
+            _users.asMap().remove(Map.entry(providerId, user.getUsername()), xdatUser);
             throw e;
         }
         SecurityContextHolder.getContext().setAuthentication(authentication);
@@ -549,10 +570,13 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
             return _users.get(Map.entry(providerId, user.getUsername()), () -> {
                 loaded.set(true);
                 final UserI resolved = resolveUser(providerId, user);
-                // XDATUser fills its authorities into a plain HashSet on first use. Requests that
-                // share the user each build a token from them, so they are filled here, before the
-                // user is shared, and those requests only read them.
+                // Every request's token reads the authorities, and XNAT's role checks read the role
+                // names. XDATUser fills each into a plain HashSet on first use, so they are filled here,
+                // before the user is shared.
                 resolved.getAuthorities();
+                if (resolved instanceof XDATUser xdatUser) {
+                    xdatUser.getRoleNames();
+                }
                 return resolved;
             });
         } catch (final ExecutionException | UncheckedExecutionException e) {
@@ -571,7 +595,7 @@ public class BearerTokenAuthenticationFilter extends OncePerRequestFilter
      * permissionless duplicate for the same human.</p>
      *
      * @throws Rejection with 403 when the identity has no account and none can be linked or created, or
-     *                   503 when its account could not be loaded.
+     *                   503 when its mapping could not be looked up or its account could not be loaded.
      */
     private UserI resolveUser(final String providerId, final OpenIdConnectUserDetails user) throws Rejection {
         try {
