@@ -26,10 +26,11 @@ import java.util.Objects;
  */
 final class RoleSyncMapping {
 
-    /** Why an entry was rejected. Each text ends a warning such as "... ignores the mapping 'x': it has ...". */
+    /** Why an entry was rejected. Each text ends a warning such as "... ignores the mapping 'x' in key: it has ...". */
     enum Reason {
         HIDDEN_CHARACTER("holds a hidden character, shown as \\uXXXX"),
-        UNCLOSED_QUOTE("has a '\"' that is never closed"),
+        UNCLOSED_QUOTE("has a '\"' that is never closed, so everything after it, commas included, is read as this "
+                + "one mapping"),
         NO_COLON("has no ':' after its claim path"),
         NO_EQUALS("has no '=' after its token role"),
         NO_CLAIM_PATH("has nothing before its ':'"),
@@ -38,7 +39,8 @@ final class RoleSyncMapping {
         WRONG_QUOTE("starts a name with a quote other than '\"'; only a straight double quote takes a name as written"),
         SPACE_IN_CLAIM_PATH("has a space in its claim path, outside double quotes"),
         NO_TOKEN_ROLE("has nothing between its ':' and its '='"),
-        URL_CLAIM_NAME("has a claim name holding ':', such as a URL, outside double quotes"),
+        URL_CLAIM_NAME("has a claim name holding ':', such as a URL, outside double quotes; write it as "
+                + "\"https://example.org/roles\":admin=Administrator"),
         EQUALS_IN_TOKEN_ROLE("has a '=' in its token role, outside double quotes"),
         NO_XNAT_ROLE("has nothing after its '='");
 

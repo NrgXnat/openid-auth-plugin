@@ -36,6 +36,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
+import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -47,6 +48,9 @@ import static org.mockito.Mockito.when;
 
 @RunWith(MockitoJUnitRunner.class)
 public class RoleSyncTest {
+
+    private static final String ON_ID = "Role sync for provider 'keycloak' on the idToken path ";
+    private static final String ON_BEARER = "Role sync for provider 'keycloak' on the bearer path ";
 
     private static final String PROVIDER = "keycloak";
     private static final String MAPPINGS =
@@ -78,8 +82,7 @@ public class RoleSyncTest {
                 assertSame(store.reloaded, sync(AuthPath.ID_TOKEN, clientRoles("xnat", "xnat-access", "xnat-admin"))));
 
         assertEquals(Collections.singletonList("+Administrator"), store.changes);
-        assertEquals(Collections.singletonList("Role sync for provider 'keycloak' on the idToken path gave user 'jane' "
-                + "the XNAT role 'Administrator'"), messagesAt(Level.INFO, events));
+        assertEquals(Collections.singletonList(ON_ID + "gave user 'jane' the XNAT role 'Administrator'"), messagesAt(Level.INFO, events));
     }
 
     @Test
@@ -90,8 +93,7 @@ public class RoleSyncTest {
                 assertSame(store.reloaded, sync(AuthPath.ID_TOKEN, clientRoles("xnat", "xnat-access"))));
 
         assertEquals(Collections.singletonList("-Administrator"), store.changes);
-        assertEquals(Collections.singletonList("Role sync for provider 'keycloak' on the idToken path removed the XNAT "
-                + "role 'Administrator' from user 'jane'"), messagesAt(Level.INFO, events));
+        assertEquals(Collections.singletonList(ON_ID + "removed the XNAT role 'Administrator' from user 'jane'"), messagesAt(Level.INFO, events));
     }
 
     @Test
@@ -194,14 +196,31 @@ public class RoleSyncTest {
 
         final List<ILoggingEvent> events = logDuring(() -> {
             roleSync.apply(PROVIDER, AuthPath.BEARER, token, user);
+            roleSync.apply(PROVIDER, AuthPath.BEARER, token, user);
+        });
+
+        assertEquals(Collections.singletonList(ON_BEARER + "could not remove the XNAT role 'Administrator' for user 'jane': "
+                + "Exception: refused"), messagesAt(Level.WARN, events));
+        assertTrue(messagesAt(Level.DEBUG, events).contains(ON_BEARER + "could not remove the XNAT role 'Administrator' "
+                + "for user 'jane': Exception: refused"));
+    }
+
+    @Test
+    public void warnsAboutAFailedChangeForEachUser() {
+        store.roles.add("Administrator");
+        store.failRemove = true;
+        final RoleSync roleSync = new RoleSync(plugin, store);
+        final TokenContext token = TokenContext.of(token(clientRoles("xnat", "xnat-access")));
+
+        final List<ILoggingEvent> events = logDuring(() -> {
+            roleSync.apply(PROVIDER, AuthPath.BEARER, token, user);
             roleSync.apply(PROVIDER, AuthPath.BEARER, token, named("john"));
         });
 
-        assertEquals(Collections.singletonList("Role sync for provider 'keycloak' on the bearer path could not remove "
-                + "the XNAT role 'Administrator' for user 'jane': refused; later failures of this kind are logged at "
-                + "DEBUG"), messagesAt(Level.WARN, events));
-        assertTrue(messagesAt(Level.DEBUG, events).contains("Role sync for provider 'keycloak' on the bearer path could "
-                + "not remove the XNAT role 'Administrator' for user 'john': refused"));
+        assertEquals(Arrays.asList(
+                ON_BEARER + "could not remove the XNAT role 'Administrator' for user 'jane': Exception: refused",
+                ON_BEARER + "could not remove the XNAT role 'Administrator' for user 'john': Exception: refused"),
+                messagesAt(Level.WARN, events));
     }
 
     @Test
@@ -235,6 +254,19 @@ public class RoleSyncTest {
     public void keepsTheSignedInUserWhenTheReloadFails() {
         store.reloadFails = true;
 
+        final List<ILoggingEvent> events = logDuring(() ->
+                assertSame(user, sync(AuthPath.ID_TOKEN, clientRoles("xnat", "xnat-access", "xnat-admin"))));
+
+        assertEquals(Collections.singletonList("+Administrator"), store.changes);
+        assertEquals(Collections.singletonList(ON_ID + "changed the XNAT roles of user 'jane' but could not reload the "
+                + "account: IllegalStateException: no such user"),
+                messagesAt(Level.WARN, events));
+    }
+
+    @Test
+    public void keepsTheSignedInUserWhenXnatReloadsNoAccount() {
+        store.reloadReturnsNull = true;
+
         final UserI result = sync(AuthPath.ID_TOKEN, clientRoles("xnat", "xnat-access", "xnat-admin"));
 
         assertEquals(Collections.singletonList("+Administrator"), store.changes);
@@ -249,7 +281,8 @@ public class RoleSyncTest {
                 assertSame(user, sync(AuthPath.BEARER, clientRoles("xnat", "xnat-access", "xnat-admin"))));
 
         assertTrue(store.roles.isEmpty());
-        assertEquals(1, messagesAt(Level.INFO, events).size());
+        assertEquals(Collections.singletonList(ON_BEARER + "asked XNAT to add the role 'Administrator' to user 'jane', "
+                + "but XNAT reported no change"), messagesAt(Level.INFO, events));
         assertTrue(messagesAt(Level.WARN, events).isEmpty());
     }
 
@@ -262,7 +295,8 @@ public class RoleSyncTest {
                 assertSame(user, sync(AuthPath.BEARER, clientRoles("xnat", "xnat-access"))));
 
         assertTrue(store.roles.contains("Administrator"));
-        assertEquals(1, messagesAt(Level.INFO, events).size());
+        assertEquals(Collections.singletonList(ON_BEARER + "asked XNAT to remove the role 'Administrator' from user "
+                + "'jane', but XNAT reported no change"), messagesAt(Level.INFO, events));
         assertTrue(messagesAt(Level.WARN, events).isEmpty());
     }
 
@@ -315,14 +349,15 @@ public class RoleSyncTest {
         final RoleSync roleSync = new RoleSync(plugin, store);
         final TokenContext token = TokenContext.of(token(clientRoles("xnat", "xnat-access", "xnat-admin")));
 
-        final List<ILoggingEvent> warnings = warningsDuring(() -> {
+        final List<ILoggingEvent> events = logDuring(() -> {
             roleSync.apply(PROVIDER, AuthPath.BEARER, token, user);
             roleSync.apply(PROVIDER, AuthPath.BEARER, token, user);
         });
 
-        assertEquals(1, warnings.size());
-        assertTrue(warnings.get(0).getFormattedMessage(),
-                warnings.get(0).getFormattedMessage().contains("'resource_access.xnat:xnat-admin=Administrator'"));
+        final String message = ON_BEARER + "ignores the mapping 'resource_access.xnat:xnat-admin=Administrator' for this "
+                + "token: its claim 'resource_access.xnat' is neither a list nor a string";
+        assertEquals(Collections.singletonList(message), messagesAt(Level.WARN, events));
+        assertTrue("the repeat is logged at DEBUG", messagesAt(Level.DEBUG, events).contains(message));
     }
 
     @Test
@@ -357,6 +392,54 @@ public class RoleSyncTest {
         sync(AuthPath.BEARER, claims);
 
         assertTrue(store.changes.isEmpty());
+    }
+
+    @Test
+    public void namesTheXnatSettingThatProtectsTheAccount() {
+        store.roles.add("Administrator");
+        store.protectedAccount = true;
+        store.protectedSetting = "receivedFileUser";
+
+        final List<ILoggingEvent> events = logDuring(() -> {
+            sync(AuthPath.ID_TOKEN, clientRoles("xnat", "xnat-access"));
+        });
+
+        assertEquals(Collections.singletonList(ON_ID + "kept the XNAT role 'Administrator' for user 'jane': the account "
+                + "is XNAT's receivedFileUser"), messagesAt(Level.WARN, events));
+    }
+
+    @Test
+    public void warnsAtEverySignInThatFailsBecauseTheUsersRolesCannotBeRead() {
+        store.rolesFail = true;
+        final RoleSync roleSync = new RoleSync(plugin, store);
+        final TokenContext token = TokenContext.of(token(clientRoles("xnat", "xnat-admin")));
+
+        final List<ILoggingEvent> events = logDuring(() -> {
+            for (int i = 0; i < 2; i++) {
+                assertThrows(IllegalStateException.class, () -> roleSync.apply(PROVIDER, AuthPath.BEARER, token, user));
+            }
+        });
+
+        assertEquals("each failed sign-in is visible", Collections.nCopies(2, ON_BEARER + "could not read the XNAT "
+                + "roles of user 'jane', so the sign-in fails: IllegalStateException: database down"),
+                messagesAt(Level.WARN, events));
+    }
+
+    @Test
+    public void namesThePathScopedSettingThatHoldsAValue() {
+        props.put("idToken.roleSync.enabled", "yes");
+
+        assertEquals(Collections.singletonList(ON_ID + "is off: openid.keycloak.idToken.roleSync.enabled is 'yes'; use "
+                + "true or false"), messagesAt(Level.WARN, report()));
+    }
+
+    @Test
+    public void givesTheRootCauseOnOneLine() {
+        final Exception e = new RuntimeException("wrapper", new IllegalStateException("relation \"x\" does not exist\n"
+                + "  Position: 12."));
+
+        assertEquals("IllegalStateException: relation \"x\" does not exist Position: 12.", RoleSync.cause(e));
+        assertEquals("NullPointerException", RoleSync.cause(new NullPointerException()));
     }
 
     @Test
@@ -461,8 +544,9 @@ public class RoleSyncTest {
     public void saysWhyAMappingIsIgnored() {
         props.put("roleSync.mappings", "nocolon=Role, " + ADMIN_MAPPING);
 
-        assertEquals(Collections.singletonList("Role sync for provider 'keycloak' on the idToken path ignores the "
-                + "mapping 'nocolon=Role': it has no ':' after its claim path"), messagesAt(Level.WARN, report()));
+        assertEquals(Collections.singletonList(ON_ID + "ignores the mapping 'nocolon=Role' in "
+                + "openid.keycloak.roleSync.mappings: it has no ':' after its claim path; "
+                + "the format is <claim path>:<token role>=<XNAT role>"), messagesAt(Level.WARN, report()));
     }
 
     @Test
@@ -471,10 +555,10 @@ public class RoleSyncTest {
         props.put("idToken.roleSync.mappings", "path:role=, groups:xnat-admin=Administrator");
 
         assertEquals(Arrays.asList(
-                "Role sync for provider 'keycloak' on the idToken path ignores the mapping 'path:role=': it has nothing "
-                        + "after its '='",
-                "Role sync for provider 'keycloak' on the bearer path ignores the mapping 'nocolon=Role': it has no ':' "
-                        + "after its claim path"),
+                ON_ID + "ignores the mapping 'path:role=' in openid.keycloak.idToken.roleSync.mappings: it has "
+                        + "nothing after its '='; the format is <claim path>:<token role>=<XNAT role>",
+                ON_BEARER + "ignores the mapping 'nocolon=Role' in openid.keycloak.roleSync.mappings: it has no ':' "
+                        + "after its claim path; the format is <claim path>:<token role>=<XNAT role>"),
                 messagesAt(Level.WARN, report(PROVIDER)));
     }
 
@@ -485,9 +569,20 @@ public class RoleSyncTest {
 
         final List<ILoggingEvent> events = report();
 
-        assertEquals(Collections.singletonList("Role sync for provider 'keycloak' on the idToken path is off, though "
-                + "roleSync.mappings is set"), messagesAt(Level.INFO, events));
+        assertEquals(Collections.singletonList(ON_ID + "is off because openid.keycloak.roleSync.enabled is not true, "
+                + "so openid.keycloak.roleSync.mappings is not used"), messagesAt(Level.INFO, events));
         assertTrue(messagesAt(Level.WARN, events).isEmpty());
+    }
+
+    @Test
+    public void namesThePathScopedToggleThatTurnsAPathOff() {
+        props.put("bearer.roleSync.enabled", "false");
+
+        assertEquals(Arrays.asList(
+                ON_ID + "is on, with 2 mappings for the XNAT roles [Administrator, XnatIQ]",
+                ON_BEARER + "is off because openid.keycloak.bearer.roleSync.enabled is not true, "
+                        + "so openid.keycloak.roleSync.mappings is not used"),
+                messagesAt(Level.INFO, report(PROVIDER)));
     }
 
     @Test
@@ -508,8 +603,7 @@ public class RoleSyncTest {
     public void summarisesWhatRoleSyncWillManage() {
         final List<ILoggingEvent> events = report();
 
-        assertEquals(Collections.singletonList("Role sync for provider 'keycloak' on the idToken path is on, with 2 "
-                + "mappings for the XNAT roles [Administrator, XnatIQ]"), messagesAt(Level.INFO, events));
+        assertEquals(Collections.singletonList(ON_ID + "is on, with 2 mappings for the XNAT roles [Administrator, XnatIQ]"), messagesAt(Level.INFO, events));
         assertTrue(messagesAt(Level.WARN, events).isEmpty());
     }
 
@@ -517,8 +611,7 @@ public class RoleSyncTest {
     public void countsASingleMapping() {
         props.put("roleSync.mappings", ADMIN_MAPPING);
 
-        assertEquals(Collections.singletonList("Role sync for provider 'keycloak' on the idToken path is on, with 1 "
-                + "mapping for the XNAT roles [Administrator]"), messagesAt(Level.INFO, report()));
+        assertEquals(Collections.singletonList(ON_ID + "is on, with 1 mapping for the XNAT roles [Administrator]"), messagesAt(Level.INFO, report()));
     }
 
     @Test
@@ -548,32 +641,29 @@ public class RoleSyncTest {
     public void warnsThatAnEnabledValueOtherThanTrueOrFalseTurnsRoleSyncOff() {
         props.put("roleSync.enabled", "yes");
 
-        assertEquals(Collections.singletonList("Role sync for provider 'keycloak' on the idToken path is off: "
-                + "roleSync.enabled is 'yes', and only true or false is accepted"), messagesAt(Level.WARN, report()));
+        assertEquals(Collections.singletonList(ON_ID + "is off: openid.keycloak.roleSync.enabled is 'yes'; use true or false"), messagesAt(Level.WARN, report()));
     }
 
     @Test
     public void showsATrailingSpaceInTheEnabledValue() {
         props.put("roleSync.enabled", "true ");
 
-        assertEquals(Collections.singletonList("Role sync for provider 'keycloak' on the idToken path is off: "
-                + "roleSync.enabled is 'true ', and only true or false is accepted"), messagesAt(Level.WARN, report()));
+        assertEquals(Collections.singletonList(ON_ID + "is off: openid.keycloak.roleSync.enabled is 'true '; use true or false"), messagesAt(Level.WARN, report()));
     }
 
     @Test
     public void showsAHiddenCharacterInTheEnabledValueAsAnEscape() {
         props.put("roleSync.enabled", "true\u00A0");
 
-        assertEquals(Collections.singletonList("Role sync for provider 'keycloak' on the idToken path is off: "
-                + "roleSync.enabled is 'true\\u00A0', and only true or false is accepted"), messagesAt(Level.WARN, report()));
+        assertEquals(Collections.singletonList(ON_ID + "is off: openid.keycloak.roleSync.enabled is 'true\\u00A0'; "
+                + "use true or false"), messagesAt(Level.WARN, report()));
     }
 
     @Test
     public void warnsWhenRoleSyncIsOnWithoutMappings() {
         props.remove("roleSync.mappings");
 
-        assertEquals(Collections.singletonList("Role sync for provider 'keycloak' on the idToken path is on but has no "
-                + "usable mappings, so it does nothing"), messagesAt(Level.WARN, report()));
+        assertEquals(Collections.singletonList(ON_ID + "is on but roleSync.mappings is not set, so it does nothing"), messagesAt(Level.WARN, report()));
     }
 
     @Test
@@ -581,10 +671,10 @@ public class RoleSyncTest {
         props.put("roleSync.mappings", "nocolon=Role");
 
         assertEquals(Arrays.asList(
-                "Role sync for provider 'keycloak' on the idToken path ignores the mapping 'nocolon=Role': it has no ':' "
-                        + "after its claim path",
-                "Role sync for provider 'keycloak' on the idToken path is on but has no usable mappings, so it does "
-                        + "nothing"), messagesAt(Level.WARN, report()));
+                ON_ID + "ignores the mapping 'nocolon=Role' in openid.keycloak.roleSync.mappings: it has no ':' "
+                        + "after its claim path; the format is <claim path>:<token role>=<XNAT role>",
+                ON_ID + "is on but every mapping in openid.keycloak.roleSync.mappings was rejected (above), so it "
+                        + "does nothing"), messagesAt(Level.WARN, report()));
     }
 
     @Test
@@ -593,20 +683,11 @@ public class RoleSyncTest {
 
         final List<ILoggingEvent> events = report();
 
-        assertEquals(Collections.singletonList("Role sync for provider 'keycloak' on the idToken path will never add "
-                + "the XNAT role 'Adminstrator': XNAT does not define it; the role is still removed when the token says "
-                + "so"), messagesAt(Level.WARN, events));
+        assertEquals(Collections.singletonList(ON_ID + "will never add the XNAT role 'Adminstrator': XNAT does not "
+                + "define it, so it is only removed. Defined roles: [Administrator, Data Manager, Legacy, XnatIQ]"),
+                messagesAt(Level.WARN, events));
         assertEquals(Collections.singletonList("Role sync for provider 'keycloak' on the idToken path is on, with 1 "
                 + "mapping for the XNAT roles [Adminstrator (remove only)]"), messagesAt(Level.INFO, events));
-    }
-
-    @Test
-    public void namesTheDefinedRoleWhenOnlyTheCaseDiffers() {
-        props.put("roleSync.mappings", "resource_access.xnat.roles:xnat-admin=administrator");
-
-        assertEquals(Collections.singletonList("Role sync for provider 'keycloak' on the idToken path will never add "
-                + "the XNAT role 'administrator': XNAT does not define it (did you mean 'Administrator'?); the role is "
-                + "still removed when the token says so"), messagesAt(Level.WARN, report()));
     }
 
     @Test
@@ -623,9 +704,8 @@ public class RoleSyncTest {
 
         final List<ILoggingEvent> events = report();
 
-        assertEquals(Collections.singletonList("Role sync for provider 'keycloak' on the idToken path could not check "
-                + "its mapped XNAT roles: XNAT's role list could not be read: no role service"),
-                messagesAt(Level.WARN, events));
+        assertEquals(Collections.singletonList(ON_ID + "could not check its mapped XNAT roles: XNAT's role list could "
+                + "not be read: IllegalStateException: no role service"), messagesAt(Level.WARN, events));
         assertEquals("the path is still reported", 1, messagesAt(Level.INFO, events).size());
     }
 
@@ -635,8 +715,8 @@ public class RoleSyncTest {
 
         final List<ILoggingEvent> events = report();
 
-        assertEquals(Collections.singletonList("Role sync for provider 'keycloak' on the idToken path could not check "
-                + "its mapped XNAT roles: XNAT reported no defined roles"), messagesAt(Level.WARN, events));
+        assertEquals(Collections.singletonList(ON_ID + "could not check its mapped XNAT roles: XNAT reported no "
+                + "defined roles, so any mapped role is added, misspelt or not"), messagesAt(Level.WARN, events));
         assertEquals("the path is still reported", 1, messagesAt(Level.INFO, events).size());
     }
 
@@ -645,8 +725,7 @@ public class RoleSyncTest {
         store.definedFails = true;
         props.remove("roleSync.mappings");
 
-        assertEquals(Collections.singletonList("Role sync for provider 'keycloak' on the idToken path is on but has no "
-                + "usable mappings, so it does nothing"), messagesAt(Level.WARN, report()));
+        assertEquals(Collections.singletonList(ON_ID + "is on but roleSync.mappings is not set, so it does nothing"), messagesAt(Level.WARN, report()));
     }
 
     @Test
@@ -655,16 +734,12 @@ public class RoleSyncTest {
         props.put("idtoken.roleSync.enabled", "true");
         otherSettings.setProperty("openid.keycloak.rolesync.enabled", "true");
 
+        final String forms = ": role sync settings are openid.<provider>.roleSync.enabled or .mappings, optionally "
+                + "with idToken. or bearer. before roleSync (names are case-sensitive)";
         assertEquals(Arrays.asList(
-                "Role sync ignores the setting 'openid.keycloak.idtoken.roleSync.enabled': role sync settings are "
-                        + "openid.<provider>.roleSync.enabled or .mappings, optionally with idToken. or bearer. before "
-                        + "roleSync",
-                "Role sync ignores the setting 'openid.keycloak.roleSync.mapping': role sync settings are "
-                        + "openid.<provider>.roleSync.enabled or .mappings, optionally with idToken. or bearer. before "
-                        + "roleSync",
-                "Role sync ignores the setting 'openid.keycloak.rolesync.enabled': role sync settings are "
-                        + "openid.<provider>.roleSync.enabled or .mappings, optionally with idToken. or bearer. before "
-                        + "roleSync"),
+                "Role sync ignores the setting 'openid.keycloak.idtoken.roleSync.enabled'" + forms,
+                "Role sync ignores the setting 'openid.keycloak.roleSync.mapping'" + forms,
+                "Role sync ignores the setting 'openid.keycloak.rolesync.enabled'" + forms),
                 messagesAt(Level.WARN, report()));
     }
 
@@ -673,7 +748,7 @@ public class RoleSyncTest {
         otherSettings.setProperty("openid.keyclaok.roleSync.enabled", "true");
 
         assertEquals(Collections.singletonList("Role sync ignores the setting 'openid.keyclaok.roleSync.enabled': "
-                + "'keyclaok' is not an enabled OpenID provider"), messagesAt(Level.WARN, report()));
+                + "'keyclaok' is not an enabled OpenID provider (enabled: keycloak)"), messagesAt(Level.WARN, report()));
     }
 
     @Test
@@ -706,12 +781,11 @@ public class RoleSyncTest {
         });
 
         assertTrue(store.changes.isEmpty());
-        assertTrue("the startup report warns about the mapping; a sign-in only notes it", messagesAt(Level.WARN, events).isEmpty());
-        assertEquals(Arrays.asList(
-                "Role sync for provider 'keycloak' on the bearer path did not give user 'jane' the XNAT role "
-                        + "'administrator': XNAT does not define it",
-                "Role sync for provider 'keycloak' on the bearer path did not give user 'jane' the XNAT role "
-                        + "'administrator': XNAT does not define it"), messagesAt(Level.DEBUG, events));
+        assertTrue("the startup report warns about the mapping", messagesAt(Level.WARN, events).isEmpty());
+        assertTrue(messagesAt(Level.INFO, events).isEmpty());
+        assertEquals(Collections.nCopies(2,
+                ON_BEARER + "did not give user 'jane' the XNAT role 'administrator': XNAT does not define it"),
+                messagesAt(Level.DEBUG, events));
     }
 
     @Test
@@ -731,9 +805,8 @@ public class RoleSyncTest {
         final List<ILoggingEvent> events = logDuring(() -> sync(AuthPath.ID_TOKEN, clientRoles("xnat", "xnat-admin")));
 
         assertTrue(store.changes.isEmpty());
-        assertEquals(Collections.singletonList("Role sync for provider 'keycloak' on the idToken path could not add the "
-                + "XNAT role 'Administrator' for user 'jane': no role service; later failures of this kind are logged "
-                + "at DEBUG"), messagesAt(Level.WARN, events));
+        assertEquals(Collections.singletonList(ON_ID + "could not add the XNAT role 'Administrator' for user 'jane': "
+                + "IllegalStateException: no role service"), messagesAt(Level.WARN, events));
     }
 
     @Test
@@ -758,8 +831,8 @@ public class RoleSyncTest {
             }
         });
 
-        assertEquals(Collections.singletonList("Role sync for provider 'keycloak' on the idToken path could not read the "
-                + "XNAT roles of user 'jane', so the sign-in fails: database down"), messagesAt(Level.WARN, events));
+        assertEquals(Collections.singletonList(ON_ID + "could not read the XNAT roles of user 'jane', so the sign-in "
+                + "fails: IllegalStateException: database down"), messagesAt(Level.WARN, events));
         assertNull("XNAT's own log has the stack trace", events.get(0).getThrowableProxy());
     }
 
@@ -768,10 +841,8 @@ public class RoleSyncTest {
         final List<ILoggingEvent> events = logDuring(() -> sync(AuthPath.ID_TOKEN, clientRoles("xnat", "xnat-access")));
 
         assertEquals(Arrays.asList(
-                "Role sync for provider 'keycloak' on the idToken path made no change to the XNAT role 'Administrator' "
-                        + "of user 'jane': the user doesn't have it",
-                "Role sync for provider 'keycloak' on the idToken path left the XNAT role 'XnatIQ' of user 'jane' as it "
-                        + "is: the token doesn't carry its claim path"), messagesAt(Level.DEBUG, events));
+                ON_ID + "made no change to the XNAT role 'Administrator' of user 'jane': the user doesn't have it",
+                ON_ID + "left the XNAT role 'XnatIQ' of user 'jane' as it is: the token doesn't carry its claim path"), messagesAt(Level.DEBUG, events));
     }
 
     @Test
@@ -785,10 +856,8 @@ public class RoleSyncTest {
                 logDuring(() -> sync(AuthPath.BEARER, Collections.singletonMap("resource_access", access)));
 
         assertEquals(Arrays.asList(
-                "Role sync for provider 'keycloak' on the bearer path made no change to the XNAT role 'Administrator' of "
-                        + "user 'jane': the user already has it",
-                "Role sync for provider 'keycloak' on the bearer path made no change to the XNAT role 'XnatIQ' of user "
-                        + "'jane': the user doesn't have it"), messagesAt(Level.DEBUG, events));
+                ON_BEARER + "made no change to the XNAT role 'Administrator' of user 'jane': the user already has it",
+                ON_BEARER + "made no change to the XNAT role 'XnatIQ' of user 'jane': the user doesn't have it"), messagesAt(Level.DEBUG, events));
         assertTrue(store.changes.isEmpty());
     }
 
@@ -893,9 +962,9 @@ public class RoleSyncTest {
             xdat.when(XDAT::getSiteConfigPreferences).thenReturn(preferences);
             final RoleSync.RoleStore xnat = new RoleSync.XnatRoleStore();
 
-            assertTrue(xnat.isProtectedAccount(named("admin")));
-            assertTrue(xnat.isProtectedAccount(named("receiver")));
-            assertFalse(xnat.isProtectedAccount(named("jane")));
+            assertEquals("primaryAdminUsername", xnat.protectedBy(named("admin")));
+            assertEquals("receivedFileUser", xnat.protectedBy(named("receiver")));
+            assertNull(xnat.protectedBy(named("jane")));
         }
     }
 
@@ -906,7 +975,7 @@ public class RoleSyncTest {
             users.when(Users::getAdminUser).thenReturn(null);
             xdat.when(XDAT::getSiteConfigPreferences).thenReturn(null);
 
-            assertFalse(new RoleSync.XnatRoleStore().isProtectedAccount(named("admin")));
+            assertNull(new RoleSync.XnatRoleStore().protectedBy(named("admin")));
         }
     }
 
@@ -966,11 +1035,11 @@ public class RoleSyncTest {
     }
 
     @Test
-    public void theXnatStoreReloadsNothingWhenTheUserCannotBeLoaded() {
+    public void theXnatStoreThrowsWhenTheUserCannotBeReloaded() {
         try (MockedStatic<Users> users = mockStatic(Users.class)) {
             users.when(() -> Users.getUser("jane")).thenThrow(new IllegalStateException("no such user"));
 
-            assertNull(new RoleSync.XnatRoleStore().reload(named("jane")));
+            assertThrows(IllegalStateException.class, () -> new RoleSync.XnatRoleStore().reload(named("jane")));
         }
     }
 
@@ -1070,7 +1139,9 @@ public class RoleSyncTest {
         boolean failRemove;
         boolean noChange;
         boolean reloadFails;
+        boolean reloadReturnsNull;
         boolean protectedAccount;
+        String protectedSetting = "primaryAdminUsername";
         boolean protectedAccountFails;
         boolean rolesFail;
         boolean definedFails;
@@ -1120,15 +1191,18 @@ public class RoleSyncTest {
 
         @Override
         public UserI reload(final UserI user) {
-            return reloadFails ? null : reloaded;
+            if (reloadFails) {
+                throw new IllegalStateException("no such user");
+            }
+            return reloadReturnsNull ? null : reloaded;
         }
 
         @Override
-        public boolean isProtectedAccount(final UserI user) {
+        public String protectedBy(final UserI user) {
             if (protectedAccountFails) {
                 throw new IllegalStateException("the primary administrator could not be loaded");
             }
-            return protectedAccount;
+            return protectedAccount ? protectedSetting : null;
         }
     }
 }

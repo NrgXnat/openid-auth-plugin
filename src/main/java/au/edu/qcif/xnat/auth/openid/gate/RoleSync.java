@@ -3,13 +3,13 @@ package au.edu.qcif.xnat.auth.openid.gate;
 import au.edu.qcif.xnat.auth.openid.OpenIdAuthPlugin;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.nrg.xdat.XDAT;
 import org.nrg.xdat.preferences.SiteConfigPreferences;
 import org.nrg.xdat.security.helpers.Roles;
 import org.nrg.xdat.security.helpers.Users;
 import org.nrg.xdat.security.services.RoleRepositoryServiceI.RoleDefinitionI;
 import org.nrg.xft.security.UserI;
-import org.slf4j.helpers.MessageFormatter;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -41,11 +41,9 @@ import java.util.stream.Collectors;
  * the site's primary administrator account or its received-file user: XNAT does its own work as those
  * accounts and expects both to be administrators.</p>
  *
- * <p>Every role sync message is written here, as {@code Role sync for provider '{p}' on the {path}
- * path ...}, where {@code {path}} is the setting prefix ({@code idToken} or {@code bearer}).
- * {@link #reportSettings} says at startup what role sync will do and what is wrong with its settings;
- * {@link #apply} logs each change at {@code INFO}, each failure at {@code WARN}, and each role it leaves
- * as it is at {@code DEBUG}.</p>
+ * <p>Every role sync message starts {@code Role sync}. {@link #reportSettings} says at startup what role
+ * sync will do and what is wrong with its settings; {@link #apply} logs each change at {@code INFO}, each
+ * failure at {@code WARN}, and each role it leaves as it is at {@code DEBUG}.</p>
  */
 @Slf4j
 public class RoleSync {
@@ -60,13 +58,15 @@ public class RoleSync {
         /** Removes {@code role} from {@code user}; false when XNAT made no change. */
         boolean remove(UserI user, String role) throws Exception;
 
-        UserI reload(UserI user);
+        /** The user as XNAT now has it, after a role change; throws when XNAT can't load it. */
+        UserI reload(UserI user) throws Exception;
 
         /**
-         * True for an account XNAT does its own work as: the site's primary administrator or its
-         * received-file user. Role sync never takes a role from either.
+         * The XNAT setting that makes {@code user} an account XNAT does its own work as,
+         * {@code primaryAdminUsername} or {@code receivedFileUser}, or null for any other account. Role sync
+         * never takes a role from such an account.
          */
-        boolean isProtectedAccount(UserI user);
+        String protectedBy(UserI user);
 
         /** The names of the roles XNAT defines; empty when XNAT can't say. */
         Set<String> definedRoles();
@@ -76,14 +76,14 @@ public class RoleSync {
     private static final Pattern SETTING =
             Pattern.compile("openid\\.(.+?)\\.(?:(?:idToken|bearer)\\.)?roleSync\\.(?:enabled|mappings)");
     private static final String SETTING_FORMS = "openid.<provider>.roleSync.enabled or .mappings, "
-            + "optionally with idToken. or bearer. before roleSync";
+            + "optionally with idToken. or bearer. before roleSync (names are case-sensitive)";
 
     /** How every message about one provider and path starts; its two arguments are the provider ID and the path. */
     private static final String LOG_PREFIX = "Role sync for provider '{}' on the {} path ";
 
     private final OpenIdAuthPlugin plugin;
     private final RoleStore store;
-    /** The warnings already written, by message or key, so one that would repeat at every sign-in is written once. */
+    /** The keys of warnings already written, so one that would repeat at every sign-in is written once. */
     private final Set<String> warned = ConcurrentHashMap.newKeySet();
 
     public RoleSync(final OpenIdAuthPlugin plugin) {
@@ -135,8 +135,14 @@ public class RoleSync {
         if (!changed) {
             return user;
         }
-        final UserI reloaded = store.reload(user);
-        return reloaded != null ? reloaded : user;
+        try {
+            final UserI reloaded = store.reload(user);
+            return reloaded != null ? reloaded : user;
+        } catch (final Exception e) {
+            log.warn(LOG_PREFIX + "changed the XNAT roles of user '{}' but could not reload the account: {}",
+                    providerId, path, user.getUsername(), cause(e));
+            return user;
+        }
     }
 
     /** The user's current XNAT roles; when XNAT can't read them, says so and lets the sign-in fail. */
@@ -145,7 +151,7 @@ public class RoleSync {
             return new LinkedHashSet<>(store.roles(user));
         } catch (final RuntimeException e) {
             log.warn(LOG_PREFIX + "could not read the XNAT roles of user '{}', so the sign-in fails: {}",
-                    providerId, path, user.getUsername(), e.getMessage());
+                    providerId, path, user.getUsername(), cause(e));
             throw e;
         }
     }
@@ -166,8 +172,8 @@ public class RoleSync {
                 log.info(LOG_PREFIX + "gave user '{}' the XNAT role '{}'", providerId, path, user.getUsername(), role);
                 return true;
             }
-            log.info(LOG_PREFIX + "asked XNAT to add the role '{}' to user '{}', but XNAT made no change (usually "
-                    + "because another sign-in already added it)", providerId, path, role, user.getUsername());
+            log.info(LOG_PREFIX + "asked XNAT to add the role '{}' to user '{}', but XNAT reported no change",
+                    providerId, path, role, user.getUsername());
         } catch (final Exception e) {
             reportFailedChange(providerId, path, "add", role, user, e);
         }
@@ -177,13 +183,11 @@ public class RoleSync {
     /** Takes the role from {@code user}, unless it is a protected account; true when XNAT made the change. */
     private boolean remove(final String providerId, final String path, final UserI user, final String role) {
         try {
-            if (store.isProtectedAccount(user)) {
-                if (!warnOnce(LOG_PREFIX + "left the XNAT role '{}' with user '{}': no role is removed from the site's "
-                        + "primary administrator or its received-file user",
-                        providerId, path, role, user.getUsername())) {
-                    log.debug(LOG_PREFIX + "left the XNAT role '{}' with the protected account '{}'",
-                            providerId, path, role, user.getUsername());
-                }
+            final String setting = store.protectedBy(user);
+            if (setting != null) {
+                warnOnce(String.join("/", providerId, path, "protected", role, user.getUsername()),
+                        LOG_PREFIX + "kept the XNAT role '{}' for user '{}': the account is XNAT's {}",
+                        providerId, path, role, user.getUsername(), setting);
                 return false;
             }
             if (store.remove(user, role)) {
@@ -191,8 +195,8 @@ public class RoleSync {
                         providerId, path, role, user.getUsername());
                 return true;
             }
-            log.info(LOG_PREFIX + "asked XNAT to remove the role '{}' from user '{}', but XNAT made no change (usually "
-                    + "because another sign-in already removed it)", providerId, path, role, user.getUsername());
+            log.info(LOG_PREFIX + "asked XNAT to remove the role '{}' from user '{}', but XNAT reported no change",
+                    providerId, path, role, user.getUsername());
         } catch (final Exception e) {
             reportFailedChange(providerId, path, "remove", role, user, e);
         }
@@ -200,19 +204,19 @@ public class RoleSync {
     }
 
     /**
-     * Says that a change failed: as a warning the first time for this provider, path, change, role, and kind of
-     * error, then at debug. A change that fails is tried again at every sign-in, which on the bearer path is
-     * every request, so the same warning would otherwise be written each time.
+     * Says that a change failed, once for this provider, path, change, role, user, and kind of error: a change
+     * that fails is tried again at every sign-in, which on the bearer path is every request.
      */
     private void reportFailedChange(final String providerId, final String path, final String change, final String role,
                                     final UserI user, final Exception e) {
-        if (warned.add(String.join("/", providerId, path, change, role, e.getClass().getName()))) {
-            log.warn(LOG_PREFIX + "could not {} the XNAT role '{}' for user '{}': {}; later failures of this kind are "
-                    + "logged at DEBUG", providerId, path, change, role, user.getUsername(), e.getMessage());
-        } else {
-            log.debug(LOG_PREFIX + "could not {} the XNAT role '{}' for user '{}': {}",
-                    providerId, path, change, role, user.getUsername(), e.getMessage());
-        }
+        warnOnce(String.join("/", providerId, path, change, role, user.getUsername(), e.getClass().getName()),
+                LOG_PREFIX + "could not {} the XNAT role '{}' for user '{}': {}",
+                providerId, path, change, role, user.getUsername(), cause(e));
+    }
+
+    /** The root cause of {@code e} on one line, as {@code Class: message}. */
+    static String cause(final Throwable e) {
+        return StringUtils.removeEnd(StringUtils.normalizeSpace(ExceptionUtils.getRootCauseMessage(e)), ":");
     }
 
     /**
@@ -229,8 +233,9 @@ public class RoleSync {
                 continue;
             }
             if (!(claim instanceof Collection || claim instanceof Object[] || claim instanceof String)) {
-                warnOnce(LOG_PREFIX + "ignores the mapping '{}': its claim path doesn't lead to a list of roles",
-                        providerId, path, mapping.entry);
+                warnOnce(String.join("/", providerId, path, "claim", mapping.entry),
+                        LOG_PREFIX + "ignores the mapping '{}' for this token: its claim '{}' is neither a list nor "
+                                + "a string", providerId, path, mapping.entry, mapping.claimPath);
                 continue;
             }
             seen = true;
@@ -262,23 +267,31 @@ public class RoleSync {
         final String enabled = config.value("roleSync.enabled");
         if (StringUtils.isNotBlank(enabled) && !"true".equalsIgnoreCase(enabled)
                 && !"false".equalsIgnoreCase(enabled)) {
-            log.warn(LOG_PREFIX + "is off: roleSync.enabled is '{}', and only true or false is accepted",
-                    providerId, path, RoleSyncMapping.escapeHidden(enabled));
+            log.warn(LOG_PREFIX + "is off: {} is '{}'; use true or false",
+                    providerId, path, config.key("roleSync.enabled"), RoleSyncMapping.escapeHidden(enabled));
             return;
         }
         final RoleSyncMapping.Parsed parsed = RoleSyncMapping.parse(config.value("roleSync.mappings"));
         if (!config.enabled("roleSync")) {
             if (!parsed.mappings().isEmpty() || !parsed.rejected().isEmpty()) {
-                log.info(LOG_PREFIX + "is off, though roleSync.mappings is set", providerId, path);
+                log.info(LOG_PREFIX + "is off because {} is not true, so {} is not used",
+                        providerId, path, config.key("roleSync.enabled"), config.key("roleSync.mappings"));
             }
             return;
         }
+        final String mappingsKey = config.key("roleSync.mappings");
         for (final RoleSyncMapping.Rejected rejection : parsed.rejected()) {
-            log.warn(LOG_PREFIX + "ignores the mapping '{}': it {}",
-                    providerId, path, rejection.entry(), rejection.reason().text);
+            log.warn(LOG_PREFIX + "ignores the mapping '{}' in {}: it {}; the format is "
+                    + "<claim path>:<token role>=<XNAT role>", providerId, path, rejection.entry(), mappingsKey,
+                    rejection.reason().text);
         }
         if (parsed.mappings().isEmpty()) {
-            log.warn(LOG_PREFIX + "is on but has no usable mappings, so it does nothing", providerId, path);
+            if (parsed.rejected().isEmpty()) {
+                log.warn(LOG_PREFIX + "is on but roleSync.mappings is not set, so it does nothing", providerId, path);
+            } else {
+                log.warn(LOG_PREFIX + "is on but every mapping in {} was rejected (above), so it does nothing",
+                        providerId, path, mappingsKey);
+            }
             return;
         }
         final Set<String> roles = new TreeSet<>();
@@ -288,8 +301,8 @@ public class RoleSync {
         for (final String role : roles) {
             if (!defined.isEmpty() && !defined.contains(role)) {
                 removeOnly.add(role);
-                log.warn(LOG_PREFIX + "will never add the XNAT role '{}': XNAT does not define it{}; the role is still "
-                        + "removed when the token says so", providerId, path, role, suggestion(role, defined));
+                log.warn(LOG_PREFIX + "will never add the XNAT role '{}': XNAT does not define it, so it is only "
+                        + "removed. Defined roles: {}", providerId, path, role, new TreeSet<>(defined));
             }
         }
         final int count = parsed.mappings().size();
@@ -304,25 +317,15 @@ public class RoleSync {
         try {
             final Set<String> defined = store.definedRoles();
             if (defined.isEmpty()) {
-                log.warn(LOG_PREFIX + "could not check its mapped XNAT roles: XNAT reported no defined roles",
-                        providerId, path);
+                log.warn(LOG_PREFIX + "could not check its mapped XNAT roles: XNAT reported no defined roles, so any "
+                        + "mapped role is added, misspelt or not", providerId, path);
             }
             return defined;
         } catch (final RuntimeException e) {
             log.warn(LOG_PREFIX + "could not check its mapped XNAT roles: XNAT's role list could not be read: {}",
-                    providerId, path, e.getMessage());
+                    providerId, path, cause(e));
             return Set.of();
         }
-    }
-
-    /** {@code " (did you mean 'X'?)"} when a defined role differs from {@code role} only in case, else "". */
-    private static String suggestion(final String role, final Set<String> defined) {
-        return defined.stream()
-                      .filter(name -> name.equalsIgnoreCase(role))
-                      .sorted()
-                      .findFirst()
-                      .map(name -> " (did you mean '" + name + "'?)")
-                      .orElse("");
     }
 
     /**
@@ -339,10 +342,9 @@ public class RoleSync {
             if (matcher.matches() && providers.contains(matcher.group(1))) {
                 continue;
             }
-            final boolean ofEnabledProvider = providers.stream().anyMatch(id -> key.startsWith("openid." + id + "."));
-            if (matcher.matches() && !ofEnabledProvider) {
-                log.warn("Role sync ignores the setting '{}': '{}' is not an enabled OpenID provider",
-                        RoleSyncMapping.escapeHidden(key), matcher.group(1));
+            if (matcher.matches() && providers.stream().noneMatch(id -> key.startsWith("openid." + id + "."))) {
+                log.warn("Role sync ignores the setting '{}': '{}' is not an enabled OpenID provider (enabled: {})",
+                        RoleSyncMapping.escapeHidden(key), matcher.group(1), String.join(", ", providers));
             } else {
                 log.warn("Role sync ignores the setting '{}': role sync settings are {}",
                         RoleSyncMapping.escapeHidden(key), SETTING_FORMS);
@@ -350,14 +352,13 @@ public class RoleSync {
         }
     }
 
-    /** Writes the warning the first time this instance sees it; true when it was written. */
-    private boolean warnOnce(final String format, final Object... args) {
-        final String message = MessageFormatter.arrayFormat(format, args).getMessage();
-        if (!warned.add(message)) {
-            return false;
+    /** Warns the first time this instance sees {@code key}, then logs the same message at DEBUG. */
+    private void warnOnce(final String key, final String format, final Object... args) {
+        if (warned.add(key)) {
+            log.warn(format, args);
+        } else {
+            log.debug(format, args);
         }
-        log.warn("{}", message);
-        return true;
     }
 
     static final class XnatRoleStore implements RoleStore {
@@ -377,14 +378,15 @@ public class RoleSync {
         }
 
         @Override
-        public boolean isProtectedAccount(final UserI user) {
+        public String protectedBy(final UserI user) {
             final String username = user.getUsername();
             final UserI admin = Users.getAdminUser();
             if (admin != null && StringUtils.equals(admin.getUsername(), username)) {
-                return true;
+                return "primaryAdminUsername";
             }
             final SiteConfigPreferences preferences = XDAT.getSiteConfigPreferences();
-            return preferences != null && StringUtils.equals(preferences.getReceivedFileUser(), username);
+            return preferences != null && StringUtils.equals(preferences.getReceivedFileUser(), username)
+                    ? "receivedFileUser" : null;
         }
 
         @Override
@@ -396,14 +398,8 @@ public class RoleSync {
         }
 
         @Override
-        public UserI reload(final UserI user) {
-            try {
-                return Users.getUser(user.getUsername());
-            } catch (final Exception e) {
-                log.warn("Role sync could not reload user '{}' after a role change: {}",
-                        user.getUsername(), e.getMessage());
-                return null;
-            }
+        public UserI reload(final UserI user) throws Exception {
+            return Users.getUser(user.getUsername());
         }
     }
 }
